@@ -744,15 +744,42 @@ JS = """
 
 # ── Main assembly ─────────────────────────────────────────────────────────────
 
+def normalize_videos(videos_raw):
+    # Extracts useful metadata if the videos came from eye_get_video_transcript raw JSON
+    clean = []
+    for v in videos_raw:
+        if "transcript_text" in v:
+            # It's a raw MCP response
+            clean.append({
+                "url": v.get("url", ""),
+                "title": v.get("title", "Unknown"),
+                "channel": v.get("author", "") or v.get("channel", ""),
+                "duration": v.get("duration", ""),
+                "key_timestamps": []
+            })
+        else:
+            clean.append(v)
+    return clean
+
+def normalize_web(web_raw):
+    clean = []
+    for w in web_raw:
+        if "results" in w: # tavily raw output
+            for res in w.get("results", []):
+                clean.append({"title": res.get("title", ""), "url": res.get("url", "")})
+        else:
+            clean.append(w)
+    return clean
+
 def main(inputs):
     topic         = str(inputs.get("topic", "Your Topic"))
     goal          = str(inputs.get("goal", ""))
     depth         = str(inputs.get("depth", "beginner")).lower()
-    videos        = inputs.get("videos", []) or []
+    videos        = normalize_videos(inputs.get("videos", []) or [])
     key_lessons   = inputs.get("key_lessons", []) or []
     action_steps  = inputs.get("action_steps", []) or []
     expert_quotes = inputs.get("expert_quotes", []) or []
-    web_sources   = inputs.get("web_sources", []) or []
+    web_sources   = normalize_web(inputs.get("web_sources", []) or [])
 
     hue = topic_hue(topic)
     css = build_css(hue)

@@ -119,39 +119,26 @@ If scraping fails, use search result snippets instead.
 > Writing HTML yourself instead of calling run_script is a skill violation.
 > The script handles all design, layout, and rendering — your job is to pass the data.**
 
-```
-run_script(
-  script_path="build_app.py",
-  inputs={
+Call `run_script` to assemble the interactive mentor guide UI.
+**DO NOT MANUALLY FORMAT THE DATA.** Use the `$tool:` macros to automatically pipe the massive JSON responses from your previous tool calls directly into the script.
+
+```json
+{
+  "script_path": "build_app.py",
+  "inputs": {
     "topic": "<topic>",
     "goal": "<goal>",
     "depth": "<depth>",
-    "videos": [
-      {
-        "title": "...",
-        "channel": "...",
-        "url": "https://youtube.com/watch?v=...",
-        "duration": "18:34",
-        "transcript_summary": "<first 1500 chars>",
-        "key_timestamps": [
-          {"time": "2:14", "label": "Core principle explained"},
-          {"time": "8:30", "label": "Common mistake to avoid"}
-        ]
-      }
-    ],
-    "key_lessons": ["Lesson 1..."],
-    "action_steps": [
-      {"step": 1, "title": "...", "description": "...", "duration": "5 min"}
-    ],
-    "expert_quotes": [{"text": "...", "author": "..."}],
-    "web_sources": [{"title": "...", "url": "..."}]
+    "videos": "$tool:eye_get_video_transcript",
+    "web_sources": "$tool:tavily_search",
+    "key_lessons": ["Lesson 1...", "Lesson 2..."],
+    "action_steps": [{"step": 1, "title": "Step", "description": "...", "duration": "5 min"}],
+    "expert_quotes": [{"text": "Quote", "author": "Author"}]
   }
-)
+}
 ```
 
----
-
-### Step 6 — Return the Result
+---### Step 6 — Return the Result
 
 Return the `run_script` result JSON **exactly as-is** — do NOT extract or unwrap fields.
 The JSON contains `{"html_app": "...", "summary": "..."}`.
