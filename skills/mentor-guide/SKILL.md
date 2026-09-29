@@ -5,7 +5,7 @@ description: >
   Given a topic or learning goal, independently researches YouTube videos and
   web articles, extracts transcripts, synthesizes key lessons and action steps,
   then assembles a self-contained interactive HTML mentor-guide app. Uses
-  call_synaptix_tool to invoke search_web, get_video_transcript, and
+  call_synaptix_tool to invoke tavily_search, get_video_transcript, and
   scrape_url_content natively with full auth context. Returns an HTML string
   wrapped in <!-- synaptix-html-app --> markers for live iframe rendering in
   the Synaptix UI.
@@ -48,14 +48,14 @@ Extract from the `brief`:
 
 ```
 call_synaptix_tool(
-  tool_name="search_web",
+  tool_name="tavily_search",
   inputs={"query": "<topic> motivational guide site:youtube.com", "include_images": false, "max_results": 5}
 )
 ```
 
 ```
 call_synaptix_tool(
-  tool_name="search_web",
+  tool_name="tavily_search",
   inputs={"query": "<topic> tutorial how-to site:youtube.com", "include_images": false, "max_results": 5}
 )
 ```
@@ -90,7 +90,7 @@ If a call fails, skip that video and continue.
 
 ```
 call_synaptix_tool(
-  tool_name="search_web",
+  tool_name="tavily_search",
   inputs={"query": "<topic> guide best practices actionable steps 2024", "include_images": false, "max_results": 5}
 )
 ```
@@ -153,11 +153,10 @@ run_script(
 
 ### Step 6 — Return the Result
 
-Return ONLY the script result's `html_app` field verbatim. No text before or after.
-Do NOT add markdown, explanation, or any wrapper text.
-
-**Output starts with:** `<!-- synaptix-html-app -->`
-**Output ends with:** `<!-- /synaptix-html-app -->`
+Return the `run_script` result JSON **exactly as-is** — do NOT extract or unwrap fields.
+The JSON contains `{"html_app": "...", "summary": "..."}`.
+Output MUST be valid JSON starting with `{` and ending with `}`.
+No markdown, no explanation, no wrapper text. The JSON is the entire terminal response.
 
 ---
 
@@ -166,7 +165,7 @@ Do NOT add markdown, explanation, or any wrapper text.
 1. **NEVER write HTML yourself** — always call `run_script(build_app.py)`. This is rule #1.
 2. Never fabricate transcript content — only use what `eye_get_video_transcript` returns
 3. Never call `call_synaptix_tool` with an `mcp_skill` tool type — blocked by recursion guard
-4. Use exact registered tool names: `search_web`, `eye_get_video_transcript`, `eye_scrape_url`
+4. Use exact registered tool names: `tavily_search`, `eye_get_video_transcript`, `eye_scrape_url`
 5. Graceful degradation: if all video calls fail, assemble with `"videos": []`
 6. Minimum viable: always call `run_script` and produce a complete app regardless of research failures
 7. Topic sanitization: topic is HTML-escaped inside `build_app.py` automatically
