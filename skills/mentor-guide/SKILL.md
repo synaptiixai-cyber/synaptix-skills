@@ -48,14 +48,14 @@ Extract from the `brief`:
 
 ```
 call_synaptix_tool(
-  tool_name="web_search",
+  tool_name="search_web",
   inputs={"query": "<topic> motivational guide site:youtube.com", "include_images": false, "max_results": 5}
 )
 ```
 
 ```
 call_synaptix_tool(
-  tool_name="web_search",
+  tool_name="search_web",
   inputs={"query": "<topic> tutorial how-to site:youtube.com", "include_images": false, "max_results": 5}
 )
 ```
@@ -90,7 +90,7 @@ If a call fails, skip that video and continue.
 
 ```
 call_synaptix_tool(
-  tool_name="web_search",
+  tool_name="search_web",
   inputs={"query": "<topic> guide best practices actionable steps 2024", "include_images": false, "max_results": 5}
 )
 ```
@@ -113,7 +113,11 @@ If scraping fails, use search result snippets instead.
 
 ---
 
-### Step 5 — Assemble the HTML App
+### Step 5 — Assemble the HTML App (MANDATORY — run_script REQUIRED)
+
+> ⚠️ **CRITICAL: You MUST call `run_script` below. You MUST NOT write HTML directly.
+> Writing HTML yourself instead of calling run_script is a skill violation.
+> The script handles all design, layout, and rendering — your job is to pass the data.**
 
 ```
 run_script(
@@ -135,10 +139,9 @@ run_script(
         ]
       }
     ],
-    "key_lessons": ["Lesson 1...", ...],
+    "key_lessons": ["Lesson 1..."],
     "action_steps": [
-      {"step": 1, "title": "...", "description": "...", "duration": "5 min"},
-      ...
+      {"step": 1, "title": "...", "description": "...", "duration": "5 min"}
     ],
     "expert_quotes": [{"text": "...", "author": "..."}],
     "web_sources": [{"title": "...", "url": "..."}]
@@ -148,9 +151,10 @@ run_script(
 
 ---
 
-### Step 6 — Return the App
+### Step 6 — Return the Result
 
-Return the script result verbatim. No text before or after.
+Return ONLY the script result's `html_app` field verbatim. No text before or after.
+Do NOT add markdown, explanation, or any wrapper text.
 
 **Output starts with:** `<!-- synaptix-html-app -->`
 **Output ends with:** `<!-- /synaptix-html-app -->`
@@ -159,12 +163,13 @@ Return the script result verbatim. No text before or after.
 
 ## Quality Rules
 
-1. Never fabricate transcript content — only use what `eye_get_video_transcript` returns
-2. Never call `call_synaptix_tool` with an `mcp_skill` tool type — blocked by recursion guard
-3. Use exact registered tool names: `web_search`, `eye_get_video_transcript`, `eye_scrape_url`
-4. Graceful degradation: if all video calls fail, assemble with `"videos": []`
-5. Minimum viable: always produce a complete HTML app regardless of research failures
-6. Topic sanitization: topic is HTML-escaped inside `build_app.py` automatically
+1. **NEVER write HTML yourself** — always call `run_script(build_app.py)`. This is rule #1.
+2. Never fabricate transcript content — only use what `eye_get_video_transcript` returns
+3. Never call `call_synaptix_tool` with an `mcp_skill` tool type — blocked by recursion guard
+4. Use exact registered tool names: `search_web`, `eye_get_video_transcript`, `eye_scrape_url`
+5. Graceful degradation: if all video calls fail, assemble with `"videos": []`
+6. Minimum viable: always call `run_script` and produce a complete app regardless of research failures
+7. Topic sanitization: topic is HTML-escaped inside `build_app.py` automatically
 
 ---
 

@@ -803,4 +803,10 @@ def main(inputs):
 
 
 # Entry point called by SkillScriptRunner
-result = main(inputs)
+# Returns a dict so LLM_EXCLUDE_KEYS=html_app can safely strip only this
+# tool's heavy HTML — without affecting any other tool's "result" key.
+html = main(inputs)
+result = {
+    "html_app": html,
+    "summary": "Mentor guide app built successfully",
+}
