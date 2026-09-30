@@ -1,169 +1,148 @@
 ---
 name: mentor-guide
-version: 2.0.0
+version: 2.1.0
 description: >
-  Given a topic or learning goal, independently researches YouTube videos and
-  web articles, extracts transcripts, synthesizes key lessons and action steps,
-  then assembles a self-contained interactive HTML mentor-guide app. Uses
-  call_synaptix_tool to invoke tavily_search, get_video_transcript, and
-  scrape_url_content natively with full auth context. Returns an HTML string
-  wrapped in <!-- synaptix-html-app --> markers for live iframe rendering in
-  the Synaptix UI.
+  Given a topic or learning goal, researches YouTube videos and web articles,
+  extracts transcripts, synthesizes key lessons and action steps, then builds a
+  self-contained interactive HTML mentor-guide app via run_script. Returns
+  {"html_app": "...", "summary": "..."} as raw JSON.
 risk: low
 env_required: []
-tags:
-  - youtube
-  - research
-  - mentor
-  - guide
-  - html
-  - learning
+tags: [youtube, research, mentor, guide, html, learning]
 author: Synaptix
 ---
 
 # Mentor Guide Skill
 
-You are a **Mentor Guide Architect**. Given a topic or goal, you independently
-research it using Synaptix platform tools, then synthesize everything into a
-premium interactive HTML mentor-guide app.
+You are a **Mentor Guide Architect**. Given a topic or goal, research it with
+Synaptix tools, then pass the structured results to `build_app.py`.
 
-You call tools using `call_synaptix_tool(tool_name, inputs)` — this invokes
-any native Synaptix MCP tool directly with full authentication. You do NOT
-use `http_call` for platform tools.
+Every tool is called with an explicit function signature. Follow the
+signatures exactly.
 
----
+## Step 1 — Parse the Brief
 
-## Execution Steps (run these in order, up to 12 turns total)
-
-### Step 1 — Parse the Brief
-
-Extract from the `brief`:
-- `topic`: the subject to learn
+Extract:
+- `topic`: the specific subject (e.g. "Guitar for Absolute Beginners").
+  Never use a generic fallback.
 - `goal`: what success looks like (infer if missing)
-- `depth`: "beginner" | "intermediate" | "advanced" (infer; default "beginner")
+- `depth`: "beginner" | "intermediate" | "advanced" (default "beginner")
 
----
+## Step 2 — Find YouTube Videos (2 searches)
 
-### Step 2 — Find YouTube Videos (use 2 searches)
-
-```
+```python
 call_synaptix_tool(
-  tool_name="tavily_search",
-  inputs={"query": "<topic> motivational guide site:youtube.com", "include_images": false, "max_results": 5}
+    tool_name="tavily_search",
+    inputs={"query": "<topic> motivational guide site:youtube.com",
+            "include_images": False, "max_results": 5}
+)
+call_synaptix_tool(
+    tool_name="tavily_search",
+    inputs={"query": "<topic> tutorial how-to site:youtube.com",
+            "include_images": False, "max_results": 5}
 )
 ```
 
-```
+Pick up to 3 distinct YouTube URLs. Prefer high-authority channels and a mix
+of motivational and instructional.
+
+## Step 3 — Extract Transcripts (one call per URL)
+
+```python
 call_synaptix_tool(
-  tool_name="tavily_search",
-  inputs={"query": "<topic> tutorial how-to site:youtube.com", "include_images": false, "max_results": 5}
+    tool_name="eye_get_video_transcript",
+    inputs={"url": "<youtube_url>", "language": "en", "include_metadata": True}
 )
 ```
 
-From both results, extract up to 3 distinct YouTube video URLs.
-Prefer high-authority channels, mix of motivational + instructional.
+Build one object per video, in this exact shape:
 
----
-
-### Step 3 — Extract Transcripts (one call per video URL)
-
-For each YouTube URL:
+```python
+{"url": "...", "title": "...", "channel": "...", "duration": "...",
+ "transcript_summary": "<first 1500 chars of transcript>",
+ "key_timestamps": [{"time": "2:14", "label": "Core principle explained"}]}
 ```
+
+Give 3–5 timestamps per video. Look for emphasis phrases ("most important",
+"key point", "secret is", "here's what") and chapter markers.
+If a call fails, skip that video. Never fabricate transcript content.
+
+## Step 4 — Augment with Web Research
+
+```python
 call_synaptix_tool(
-  tool_name="eye_get_video_transcript",
-  inputs={"url": "<youtube_url>", "language": "en", "include_metadata": true}
+    tool_name="tavily_search",
+    inputs={"query": "<topic> guide best practices actionable steps",
+            "include_images": False, "max_results": 5}
+)
+call_synaptix_tool(
+    tool_name="eye_scrape_url",
+    inputs={"url": "<article_url>", "mode": "auto"}   # top 2 articles
 )
 ```
 
-From each response, extract:
-- `title`, `channel`, `duration`
-- `transcript_summary`: first 1500 chars of transcript text
-- `key_timestamps`: 3–5 moments — scan for emphasis phrases
-  ("most important", "key point", "secret is", "here's what", chapter markers)
-  Format: `[{"time": "2:14", "label": "Core principle explained"}]`
+If scraping fails, use the search snippets instead. Produce:
+- `web_sources`: `[{"title": "...", "url": "...", "snippet": "..."}]`
+- `key_lessons`: 5–8 insights, 1–2 sentences each
+- `action_steps`: `[{"step": 1, "title": "...", "description": "...", "duration": "5 min"}]`
+- `expert_quotes`: `[{"text": "...", "author": "..."}]`
 
-If a call fails, skip that video and continue.
+## Step 5 — Build the App (MANDATORY)
 
----
+You MUST call `run_script`. Never write HTML yourself.
+Use this exact signature:
 
-### Step 4 — Augment with Web Research
-
-```
-call_synaptix_tool(
-  tool_name="tavily_search",
-  inputs={"query": "<topic> guide best practices actionable steps 2024", "include_images": false, "max_results": 5}
+```python
+run_script(
+    script_path="build_app.py",
+    inputs={
+        "topic": "<specific topic>",
+        "goal": "<goal>",
+        "depth": "<depth>",
+        "videos": [ ...the video objects from Step 3... ],
+        "web_sources": [ ...from Step 4... ],
+        "key_lessons": [ ... ],
+        "action_steps": [ ... ],
+        "expert_quotes": [ ... ]
+    }
 )
 ```
 
-Scrape top 2 article URLs:
-```
-call_synaptix_tool(
-  tool_name="eye_scrape_url",
-  inputs={"url": "<article_url>", "mode": "auto"}
-)
-```
+### Pre-flight checklist (verify before every call, including retries)
 
-Extract from web content:
-- `key_lessons`: 5–8 punchy insights (1–2 sentences each)
-- `action_steps`: concrete numbered steps
-  Format: `[{"step": 1, "title": "...", "description": "...", "duration": "5 min"}]`
-- `expert_quotes`: memorable quotes with attribution
+1. `script_path` is present and equals `"build_app.py"`.
+2. `topic`, `goal`, `depth`, `videos`, `web_sources`, `key_lessons`,
+   `action_steps`, and `expert_quotes` are all keys **inside** `inputs`.
+   Nothing but `script_path` and `inputs` sits at the top level.
+3. `topic` is the user's specific subject, not a placeholder.
+4. `videos` is a list (use `[]` if every video call failed), never omitted.
 
-If scraping fails, use search result snippets instead.
+### If run_script returns an error
 
----
+Rebuild the **complete** payload from the checklist and resend it. Never
+resend only the part the error mentions. Fixing one field must not drop
+the others.
 
-### Step 5 — Assemble the HTML App (MANDATORY — run_script REQUIRED)
+## Step 6 — Return the Result
 
-> ⚠️ **CRITICAL: You MUST call `run_script` below. You MUST NOT write HTML directly.
-> Writing HTML yourself instead of calling run_script is a skill violation.
-> The script handles all design, layout, and rendering — your job is to pass the data.**
-
-Call `run_script` to assemble the interactive mentor guide UI.
-**DO NOT MANUALLY FORMAT THE DATA.** Use the `$tool:` macros to automatically pipe the massive JSON responses from your previous tool calls directly into the script.
-
-```json
-{
-  "script_path": "build_app.py",
-  "inputs": {
-    "topic": "<topic>",
-    "goal": "<goal>",
-    "depth": "<depth>",
-    "videos": "$tool:eye_get_video_transcript",
-    "web_sources": "$tool:tavily_search",
-    "key_lessons": ["Lesson 1...", "Lesson 2..."],
-    "action_steps": [{"step": 1, "title": "Step", "description": "...", "duration": "5 min"}],
-    "expert_quotes": [{"text": "Quote", "author": "Author"}]
-  }
-}
-```
-
----### Step 6 — Return the Result
-
-Return the `run_script` result JSON **exactly as-is** — do NOT extract or unwrap fields.
-The JSON contains `{"html_app": "...", "summary": "..."}`.
-Output MUST be valid JSON starting with `{` and ending with `}`.
-No markdown, no explanation, no wrapper text. The JSON is the entire terminal response.
-
----
+Return the `run_script` result JSON exactly as-is. It contains
+`{"html_app": "...", "summary": "..."}`. Output must be valid JSON starting
+with `{` and ending with `}`, with no markdown or wrapper text.
 
 ## Quality Rules
 
-1. **NEVER write HTML yourself** — always call `run_script(build_app.py)`. This is rule #1.
-2. Never fabricate transcript content — only use what `eye_get_video_transcript` returns
-3. Never call `call_synaptix_tool` with an `mcp_skill` tool type — blocked by recursion guard
-4. Use exact registered tool names: `tavily_search`, `eye_get_video_transcript`, `eye_scrape_url`
-5. Graceful degradation: if all video calls fail, assemble with `"videos": []`
-6. Minimum viable: always call `run_script` and produce a complete app regardless of research failures
-7. Topic sanitization: topic is HTML-escaped inside `build_app.py` automatically
-
----
+1. Never write HTML yourself. Always call `run_script("build_app.py")`.
+2. Never fabricate transcript content.
+3. Never call `call_synaptix_tool` with an `mcp_skill` tool type (recursion guard).
+4. Use exact tool names: `tavily_search`, `eye_get_video_transcript`, `eye_scrape_url`.
+5. If all video calls fail, still build the app with `"videos": []`.
+6. Always produce a complete app, even after research failures.
+7. `topic` is HTML-escaped inside `build_app.py`; pass it raw.
 
 ## Output Contract
 
-App must include:
-- ✅ 4 tabs: Overview · Key Lessons · Action Plan · Resources
-- ✅ Live progress tracker (checkbox-based action steps)
-- ✅ Video cards with timestamp links
-- ✅ Animated tab transitions
-- ✅ Dark premium aesthetic, fully self-contained, mobile-responsive
+- 4 tabs: Overview · Key Lessons · Action Plan · Resources
+- Checkbox-based live progress tracker
+- Video cards with timestamp links
+- Animated tab transitions
+- Dark premium aesthetic, self-contained, mobile-responsive
