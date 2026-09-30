@@ -617,24 +617,31 @@ def build_resources(videos, web_sources):
         dur    = e(v.get("duration", ""))
 
         if vid_id:
+            player_id = f"yt-player-{vid_id}"
             thumb_html = f"""
-              <a href="{e(url)}" target="_blank" rel="noopener">
-                <img src="https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
-                     alt="{title}" loading="lazy"
-                     onerror="this.parentElement.innerHTML='<div class=video-thumb-fallback>▶</div>'">
-                <div class="play-badge">{play_icon}</div>
-              </a>"""
+              <iframe id="{player_id}"
+                      src="https://www.youtube-nocookie.com/embed/{vid_id}?enablejsapi=1"
+                      style="width: 100%; height: 100%; border: 0;"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowfullscreen
+                      loading="lazy"
+                      title="{title}">
+              </iframe>"""
         else:
+            player_id = ""
             thumb_html = f'<div class="video-thumb-fallback">▶</div>'
 
         ts_links = ""
         for ts in (v.get("key_timestamps") or []):
+            if not isinstance(ts, dict):
+                continue
             t      = ts.get("time", "")
             label  = ts.get("label", "")
             secs   = ts_to_seconds(t)
             ts_url = f"{url}{'&' if '?' in url else '?'}t={secs}s" if vid_id and t else url
+            seek_call = f"onclick=\"if(window.seekVideo){{seekVideo('{player_id}', {secs}); return false;}}\"" if player_id else ""
             ts_links += f"""
-              <a href="{safe_url(ts_url)}" target="_blank" rel="noopener" class="ts-link">
+              <a href="{safe_url(ts_url)}" target="_blank" rel="noopener noreferrer" class="ts-link" {seek_call}>
                 <span class="ts-time">{e(t)}</span>
                 <span class="ts-label">{e(label)}</span>
               </a>"""
@@ -717,11 +724,46 @@ JS = """
     btn.addEventListener('click', function() { showPanel(btn.dataset.panel); });
   });
 
-  // Checkbox → progress
+  // Video scrubbing via postMessage to YouTube player
+  window.seekVideo = function(iframeId, seconds) {
+    var iframe = document.getElementById(iframeId);
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage(JSON.stringify({
+        event: 'command',
+        func: 'seekTo',
+        args: [seconds, true]
+      }), '*');
+      iframe.contentWindow.postMessage(JSON.stringify({
+        event: 'command',
+        func: 'playVideo'
+      }), '*');
+    }
+  };
+
+  var storageKey = 'synaptix_progress_' + (document.title || 'default').replace(/\W+/g, '_');
+  try {
+    var saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    document.querySelectorAll('.step-checkbox').forEach(function(b, idx) {
+      if (saved[idx]) {
+        b.checked = true;
+        var row = document.getElementById('step-row-' + (idx + 1));
+        if (row) row.classList.add('done');
+      }
+    });
+  } catch(e) {}
+
+  // Checkbox → progress + localStorage
   window.onCheck = function(checkbox, rowId) {
     var row = document.getElementById(rowId);
     if (row) row.classList.toggle('done', checkbox.checked);
     updateProgress();
+    try {
+      var state = {};
+      document.querySelectorAll('.step-checkbox').forEach(function(b, idx) {
+        state[idx] = b.checked;
+      });
+      localStorage.setItem(storageKey, JSON.stringify(state));
+    } catch(e) {}
   };
 
   function updateProgress() {
