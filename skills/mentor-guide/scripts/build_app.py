@@ -35,7 +35,6 @@ import hashlib
 import html as _html
 import json
 import re
-from urllib.parse import parse_qs, urlparse
 
 # -- Config -------------------------------------------------------------------
 
@@ -117,38 +116,37 @@ def first(d: dict, *keys, default=None):
     return default
 
 
+_URL_RE = re.compile(r"^(https?)://([^/?#:]+)(?::\d+)?(/[^?#]*)?(?:\?([^#]*))?", re.IGNORECASE)
+
+
 def safe_url(url) -> str:
     """http(s) only, with a host. Anything else returns ''."""
     u = _CTRL.sub("", str(url or "")).strip()
-    if not u or len(u) > 2048:
-        return ""
-    try:
-        p = urlparse(u)
-    except ValueError:
-        return ""
-    if p.scheme.lower() not in ("http", "https") or not p.netloc:
+    if not u or len(u) > 2048 or not _URL_RE.match(u):
         return ""
     return u
 
 
 def youtube_id(url: str):
-    try:
-        p = urlparse(url)
-    except ValueError:
+    u = _CTRL.sub("", str(url or "")).strip()
+    m = _URL_RE.match(u)
+    if not m:
         return None
-    host = (p.hostname or "").lower()
+    host = m.group(2).lower()
     if host not in _YT_HOSTS:
         return None
+    path = m.group(3) or "/"
+    query = m.group(4) or ""
     cand = None
     if host.endswith("youtu.be"):
-        cand = p.path.lstrip("/")[:11]
+        cand = path.lstrip("/")[:11]
     else:
-        q = parse_qs(p.query).get("v")
-        if q:
-            cand = q[0]
+        qv = re.search(r"(?:^|[?&])v=([^&#]+)", query)
+        if qv:
+            cand = qv.group(1)
         else:
-            m = re.match(r"^/(?:embed|shorts|live|v)/([^/?#]+)", p.path)
-            cand = m.group(1) if m else None
+            em = re.match(r"^/(?:embed|shorts|live|v)/([^/?#]+)", path)
+            cand = em.group(1) if em else None
     return cand if cand and _YT_ID.match(cand) else None
 
 
@@ -276,7 +274,8 @@ def norm_web(raw, warn):
         if url in seen:
             continue
         seen.add(url)
-        host = (urlparse(url).hostname or "").removeprefix("www.")
+        m_host = _URL_RE.match(url)
+        host = (m_host.group(2).lower() if m_host else "").removeprefix("www.")
         out.append({"url": url, "title": txt(item.get("title", ""), MAX_TITLE) or host, "host": host})
     return out[:MAX_ITEMS]
 
