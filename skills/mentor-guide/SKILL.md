@@ -1,6 +1,6 @@
 ---
 name: mentor-guide
-version: 2.1.0
+version: 2.2.0
 description: >
   Given a topic or learning goal, researches YouTube videos and web articles,
   extracts transcripts, synthesizes key lessons and action steps, then builds a
@@ -46,7 +46,7 @@ call_synaptix_tool(
 Pick up to 3 distinct YouTube URLs. Prefer high-authority channels and a mix
 of motivational and instructional.
 
-## Step 3 — Extract Transcripts (one call per URL)
+## Step 3 — Extract Transcripts & Video Insights (one call per URL)
 
 ```python
 call_synaptix_tool(
@@ -58,16 +58,30 @@ call_synaptix_tool(
 Build one object per video, in this exact shape:
 
 ```python
-{"url": "...", "title": "...", "channel": "...", "duration": "...",
- "transcript_summary": "<first 1500 chars of transcript>",
- "key_timestamps": [{"time": "2:14", "label": "Core principle explained"}]}
+{
+    "url": "https://www.youtube.com/watch?v=...",
+    "title": "Exact Video Title",
+    "channel": "Channel Name",
+    "duration": "14:20",
+    "transcript_summary": "Thorough 2–3 sentence synthesis of what the video teaches, core technique, and key takeaway.",
+    "takeaways": [
+        "Concrete technique or rule taught in the video (e.g. thumb alignment)",
+        "Specific practice drill or milestone recommended by creator",
+        "Common beginner pitfall warned against in the audio"
+    ],
+    "key_timestamps": [
+        {"time": "1:15", "label": "Foundational Setup & Mechanics"},
+        {"time": "5:30", "label": "Key Drill / Demonstration"}
+    ]
+}
 ```
 
 Give 3–5 timestamps per video. Look for emphasis phrases ("most important",
 "key point", "secret is", "here's what") and chapter markers.
+Extract real techniques from the transcript into `takeaways`.
 If a call fails, skip that video. Never fabricate transcript content.
 
-## Step 4 — Augment with Web Research
+## Step 4 — Augment with Web Research & Synthesize Deep Lessons
 
 ```python
 call_synaptix_tool(
@@ -81,11 +95,35 @@ call_synaptix_tool(
 )
 ```
 
-If scraping fails, use the search snippets instead. Produce:
+If scraping fails, use the search snippets instead. Produce rich, structured data:
 - `web_sources`: `[{"title": "...", "url": "...", "snippet": "..."}]`
-- `key_lessons`: 5–8 insights, 1–2 sentences each
-- `action_steps`: `[{"step": 1, "title": "...", "description": "...", "duration": "5 min"}]`
-- `expert_quotes`: `[{"text": "...", "author": "..."}]`
+- `key_lessons`: 5–8 rich structured lesson objects synthesizing video transcripts and web sources:
+  ```json
+  [
+    {
+      "title": "Clear Concept / Technique Name",
+      "description": "Thorough 2–3 sentence explanation of the mechanism, why it matters, and how it works.",
+      "tips": [
+        "Specific mechanical execution tip (e.g. 'Keep thumb behind 2nd fret')",
+        "Common mistake to avoid (e.g. 'Avoid pressing harder than necessary')"
+      ],
+      "source": "Channel or Author Name (e.g. 'JustinGuitar')"
+    }
+  ]
+  ```
+- `action_steps`: 5 progressive practice steps with specific drills:
+  ```json
+  [
+    {
+      "step": 1,
+      "title": "Clear Step Title",
+      "description": "What to practice and the outcome expected.",
+      "duration": "5 min",
+      "details": "Exact drill instruction (e.g. 'Set a 60-second timer and alternate between G and C chords, counting clean changes')."
+    }
+  ]
+  ```
+- `expert_quotes`: `[{"text": "Verbatim quote from video transcript or article", "author": "Creator / Author"}]`
 
 ## Step 5 — Build the App (MANDATORY)
 
@@ -101,9 +139,9 @@ run_script(
         "depth": "<depth>",
         "videos": [ ...the video objects from Step 3... ],
         "web_sources": [ ...from Step 4... ],
-        "key_lessons": [ ... ],
-        "action_steps": [ ... ],
-        "expert_quotes": [ ... ]
+        "key_lessons": [ ...from Step 4... ],
+        "action_steps": [ ...from Step 4... ],
+        "expert_quotes": [ ...from Step 4... ]
     }
 )
 ```
@@ -143,6 +181,8 @@ with `{` and ending with `}`, with no markdown or wrapper text.
 
 - 4 tabs: Overview · Key Lessons · Action Plan · Resources
 - Checkbox-based live progress tracker
-- Video cards with timestamp links
+- Video cards with timestamp links, transcript summary, and takeaways
+- Rich lesson cards with tips and source attribution
+- Action steps with specific practice drills
 - Animated tab transitions
 - Dark premium aesthetic, self-contained, mobile-responsive
