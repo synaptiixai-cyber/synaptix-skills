@@ -1,61 +1,148 @@
 ---
 name: mentor-guide
-version: 2.2.0
+version: 3.1.0
 description: >
-  Given a topic or learning goal, researches YouTube videos and web articles,
-  extracts transcripts, synthesizes key lessons and action steps, then builds a
-  self-contained interactive HTML mentor-guide app via run_script. Returns
-  {"html_app": "...", "summary": "..."} as raw JSON.
+  Use when the user wants a guide, plan, roadmap or "teach me / help me plan X"
+  for any topic: learning a skill or subject, exam prep, a trip or event, a
+  project, a decision, or a habit change. Researches suitable sources, then
+  builds a self-contained interactive HTML guide via run_script. Returns
+  {"html_app": "...", "summary": "...", "warnings": [...]} as raw JSON.
 risk: low
 env_required: []
-tags: [youtube, research, mentor, guide, html, learning]
+tags: [research, guide, planner, mentor, html, learning, travel]
 author: Synaptix
 ---
 
 # Mentor Guide Skill
 
-You are a **Mentor Guide Architect**. Given a topic or goal, research it with
-Synaptix tools, then pass the structured results to `build_app.py`.
+You are a **Guide Architect**. For any topic, classify the request, research
+suitable sources, synthesize plain-text structured data, then pass it to
+`build_app.py`. The script owns all layout, styling and interactivity. You own
+content quality, honesty and fit to the topic.
 
 Every tool is called with an explicit function signature. Follow the
 signatures exactly.
 
-## Step 1 — Parse the Brief
+## Step 0: Safety Gate
+
+- Harmful or illegal goals: decline, or reframe to a safe angle (how it works
+  at a high level, how to stay safe).
+- Crisis topics (self-harm, abuse, acute danger): do not build a guide. Reply
+  with brief supportive text and encourage contacting local emergency or
+  crisis services.
+- Health, mental health, legal, financial, or physically risky topics: build
+  the guide but set `notice` (Step 5). No diagnosis, dosing, personalized
+  legal or financial advice, or "buy this" recommendations.
+
+## Step 1: Classify and Parse the Brief
+
+Pick `archetype` (unknown values are treated as "other"):
+`learn_skill`, `understand_subject`, `exam_prep`, `plan_trip`, `plan_event`,
+`build_project`, `decision`, `habit`, `other`.
+
+The script sets default wording from the archetype (a trip's action tab is
+"Before you go", a project's is "Milestones"). Override with `labels` only
+when needed.
 
 Extract:
-- `topic`: the specific subject (e.g. "Guitar for Absolute Beginners").
-  Never use a generic fallback.
-- `goal`: what success looks like (infer if missing)
-- `depth`: "beginner" | "intermediate" | "advanced" (default "beginner")
+- `topic`: the specific subject (e.g. "Guitar for Absolute Beginners",
+  "10 Days in Japan"). Never a generic fallback. Under ~60 characters: it
+  becomes the page headline.
+- `goal`: one sentence describing success as an outcome ("Play three
+  open-chord songs cleanly by week 6"). Infer it if missing. Max 500
+  characters, aim for under 140.
+- `depth`: "beginner" | "intermediate" | "advanced" (default "beginner").
+  Any other value is ignored by the app.
+- `lang`: language code of the user's request (e.g. "en", "es"). Write all
+  content in that language.
+- `assumptions`: up to 6 short strings for anything you guessed (dates,
+  budget, party size, starting level, scope).
 
-## Step 2 — Find YouTube Videos (2 searches)
+Ask **at most one** clarifying question, only when the answer would change
+the guide a lot (trip dates or budget, starting level, exam date). If you
+cannot ask, proceed and record your guesses in `assumptions`.
+
+Scope: for huge topics, build the first phase and say so in `goal`. For vague
+topics, state your interpretation in `goal`.
+
+Depth shapes content, since the layout is the same for every level:
+- beginner: plain language, fewer and more foundational lessons, short
+  sessions (5-15 min), encouraging milestones.
+- intermediate: name common plateaus and how to break them; 15-30 min sessions.
+- advanced: assume fundamentals; focus on refinement, edge cases and
+  deliberate-practice methods; 30+ min sessions.
+
+## Step 2: Choose Sections
+
+Include only sections that serve the topic:
+
+| archetype | usual sections |
+|---|---|
+| learn_skill | key_lessons, action_steps, videos, web_sources |
+| understand_subject | key_lessons, action_steps (reading, explaining), web_sources |
+| exam_prep | key_lessons (syllabus areas), action_steps (study plan), schedule, web_sources |
+| plan_trip / plan_event | schedule, checklist, budget, deadlines, action_steps (prep), web_sources |
+| build_project | action_steps (milestones), checklist, deadlines, key_lessons (risks), web_sources |
+| decision | key_lessons (one per option or criterion), action_steps (how to decide), web_sources |
+| habit | key_lessons, action_steps (experiments), web_sources |
+
+Mixed topics may combine sections.
+
+Optional `labels` keys (max 30 characters each): `overview`, `lessons`,
+`action`, `schedule`, `checklist`, `budget`, `deadlines`, `step`, `drill`,
+`tips`. Any other key is ignored.
+
+## Step 3: Research by Domain
+
+Tools (exact names, exact signatures):
 
 ```python
-call_synaptix_tool(
-    tool_name="tavily_search",
+call_synaptix_tool(tool_name="tavily_search",
+    inputs={"query": "<query>", "include_images": False, "max_results": 5})
+call_synaptix_tool(tool_name="eye_get_video_transcript",
+    inputs={"url": "<youtube_url>", "language": "en", "include_metadata": True})
+call_synaptix_tool(tool_name="eye_scrape_url",
+    inputs={"url": "<article_url>", "mode": "auto"})
+```
+
+General rules:
+- Run 3-6 targeted searches, one per sub-area (basics, common mistakes,
+  logistics, current rules). Search in the user's language.
+- Source priority by domain: official docs for software; clinical or
+  government bodies for health; official tourism, government and transit
+  sites for travel rules; exam boards for credentials; primary or scholarly
+  sources for history and science. Skip low-quality SEO pages.
+- Scrape the top 2 articles. If scraping fails, use the search snippets.
+- If sources disagree, add a lesson saying so instead of silently picking one.
+- Fast-changing facts (prices, hours, visa or legal rules, software versions):
+  never state them as certain. Set `"verify": true` where the field exists and
+  link the official source in `web_sources`.
+- If research is thin, build a smaller accurate guide, never padded content.
+- Never fabricate transcripts, timestamps, quotes, prices or sources. Skip any
+  failed call.
+- Never call `call_synaptix_tool` with an `mcp_skill` tool type.
+
+Videos are **optional**. Use them for visual or physical skills, and for
+topics where demonstrations help. For topics with no good video, use
+`"videos": []` on purpose.
+
+When using videos, run two searches:
+
+```python
+call_synaptix_tool(tool_name="tavily_search",
     inputs={"query": "<topic> motivational guide site:youtube.com",
-            "include_images": False, "max_results": 5}
-)
-call_synaptix_tool(
-    tool_name="tavily_search",
+            "include_images": False, "max_results": 5})
+call_synaptix_tool(tool_name="tavily_search",
     inputs={"query": "<topic> tutorial how-to site:youtube.com",
-            "include_images": False, "max_results": 5}
-)
+            "include_images": False, "max_results": 5})
 ```
 
-Pick up to 3 distinct YouTube URLs. Prefer high-authority channels and a mix
-of motivational and instructional.
+Pick up to 3 distinct YouTube video URLs (watch, youtu.be, shorts or embed;
+the app only shows a player for valid video IDs). Prefer high-authority
+channels and a mix of motivational and instructional. Skip playlists, channel
+pages and duplicates. Make one transcript call per URL.
 
-## Step 3 — Extract Transcripts & Video Insights (one call per URL)
-
-```python
-call_synaptix_tool(
-    tool_name="eye_get_video_transcript",
-    inputs={"url": "<youtube_url>", "language": "en", "include_metadata": True}
-)
-```
-
-Build one object per video, in this exact shape:
+## Step 4: Video Objects (only if used)
 
 ```python
 {
@@ -63,85 +150,111 @@ Build one object per video, in this exact shape:
     "title": "Exact Video Title",
     "channel": "Channel Name",
     "duration": "14:20",
-    "transcript_summary": "Thorough 2–3 sentence synthesis of what the video teaches, core technique, and key takeaway.",
+    "transcript_summary": "2-3 sentence synthesis: what the video teaches, the core technique, the key takeaway.",
     "takeaways": [
-        "Concrete technique or rule taught in the video (e.g. thumb alignment)",
-        "Specific practice drill or milestone recommended by creator",
-        "Common beginner pitfall warned against in the audio"
+        "Concrete technique or rule taught in the video",
+        "Specific practice drill or milestone the creator recommends",
+        "Common pitfall the creator warns against"
     ],
     "key_timestamps": [
-        {"time": "1:15", "label": "Foundational Setup & Mechanics"},
-        {"time": "5:30", "label": "Key Drill / Demonstration"}
+        {"time": "1:15", "label": "Foundational setup and mechanics"},
+        {"time": "5:30", "label": "Key drill demonstration"}
     ]
 }
 ```
 
-Give 3–5 timestamps per video. Look for emphasis phrases ("most important",
-"key point", "secret is", "here's what") and chapter markers.
-Extract real techniques from the transcript into `takeaways`.
-If a call fails, skip that video. Never fabricate transcript content.
+- 3-5 timestamps per video, taken only from the transcript or chapter
+  markers. Look for emphasis phrases ("most important", "key point", "secret
+  is", "here's what").
+- `time` must be `m:ss` or `h:mm:ss` (e.g. "1:15", "1:02:40"). Anything else
+  is silently dropped. Labels are under ~60 characters.
+- `transcript_summary` stays under ~400 characters (hard cap 1200).
+- Every takeaway comes from the transcript. If a call fails, skip that video.
 
-## Step 4 — Augment with Web Research & Synthesize Deep Lessons
+## Step 5: Synthesize the Payload
 
-```python
-call_synaptix_tool(
-    tool_name="tavily_search",
-    inputs={"query": "<topic> guide best practices actionable steps",
-            "include_images": False, "max_results": 5}
-)
-call_synaptix_tool(
-    tool_name="eye_scrape_url",
-    inputs={"url": "<article_url>", "mode": "auto"}   # top 2 articles
-)
+All values are plain text: no HTML, no markdown, no bullets inside strings, no
+invented content. Separate paragraphs with a blank line. Lists are always
+lists, never strings.
+
+**`notice`**: one or two sentences, only for sensitive or risky topics or
+fast-changing rules (when to see a professional, what to verify).
+
+**`key_lessons`**: 3-8 objects that synthesize videos AND web sources.
+```json
+{"title": "Clear Concept or Technique Name",
+ "description": "2-3 sentences: the mechanism, why it matters, how it works.",
+ "tips": ["Specific execution tip", "Common mistake to avoid"],
+ "source": "Channel or Author Name"}
 ```
+- Order matters: the Overview previews the first 3 as "Worth knowing first".
+  Put the most foundational lessons first, in the order a learner should meet
+  them.
+- Titles are short noun phrases (under ~50 characters).
+- Each lesson teaches something distinct. Merge overlapping ideas.
+- 2-3 tips per lesson, one sentence each, mixing "do this" and "avoid this".
 
-If scraping fails, use the search snippets instead. Produce rich, structured data:
-- `web_sources`: `[{"title": "...", "url": "...", "snippet": "..."}]`
-- `key_lessons`: 5–8 rich structured lesson objects synthesizing video transcripts and web sources:
-  ```json
-  [
-    {
-      "title": "Clear Concept / Technique Name",
-      "description": "Thorough 2–3 sentence explanation of the mechanism, why it matters, and how it works.",
-      "tips": [
-        "Specific mechanical execution tip (e.g. 'Keep thumb behind 2nd fret')",
-        "Common mistake to avoid (e.g. 'Avoid pressing harder than necessary')"
-      ],
-      "source": "Channel or Author Name (e.g. 'JustinGuitar')"
-    }
-  ]
-  ```
-- `action_steps`: 5 progressive practice steps with specific drills:
-  ```json
-  [
-    {
-      "step": 1,
-      "title": "Clear Step Title",
-      "description": "What to practice and the outcome expected.",
-      "duration": "5 min",
-      "details": "Exact drill instruction (e.g. 'Set a 60-second timer and alternate between G and C chords, counting clean changes')."
-    }
-  ]
-  ```
-- `expert_quotes`: `[{"text": "Verbatim quote from video transcript or article", "author": "Creator / Author"}]`
+**`action_steps`**: **3-8** progressive steps scaled to scope.
+```json
+{"step": 1, "title": "Clear Step Title",
+ "description": "What to do and the outcome expected.",
+ "duration": "10 min",
+ "details": "Exact activity: what to do, how long, and how you know it worked."}
+```
+- Each step builds on the last (foundation, combination, application,
+  refinement, milestone or mini-project). Adapt the pattern to the topic.
+- `duration` is short ("10 min", "3 x 5 min", "1 week").
+- `details` includes a measurable check, e.g. "Repeat until you complete 5
+  clean changes in a row."
+- Titles are stable and specific: the app uses them to key saved progress, so
+  vague titles ("Practice") make it fragile. No "Step 1:" prefixes; the app
+  numbers them.
 
-## Step 5 — Build the App (MANDATORY)
+**`schedule`** (trips, events, study plans, timelines):
+```json
+[{"title": "Day 1", "summary": "optional",
+  "items": [{"time": "09:00", "title": "...", "note": "...", "verify": true}]}]
+```
+Max ~10 groups, ~8 items each. Realistic pacing, group nearby things, include
+rest.
+
+**`checklist`**: `[{"title": "Packing", "items": ["Passport", "Adapter"]}]`
+
+**`budget`**: `{"currency": "USD", "items": [{"label": "Flights", "estimate": 900, "verify": true}]}`.
+`estimate` is a number. Use `verify: true` for anything price-like. Leave
+`estimate` out when unknown rather than guessing.
+
+**`deadlines`**: `[{"title": "Book flights", "date": "2026-11-01", "note": "..."}]`.
+`date` must be a real `YYYY-MM-DD` or omitted. Never invent dates the user or
+sources did not imply; put relative timing in `note`.
+
+**`web_sources`**: `[{"title": "...", "url": "https://..."}]`. Only title and
+URL are shown. Use real page titles, 3-6 reputable sources, no duplicates.
+
+**`expert_quotes`**: `[{"text": "...", "author": "..."}]`
+- Only text that appears in retrieved material. Never paraphrase and label it
+  a quote.
+- **30 words or fewer** (longer quotes are dropped); aim for under ~20.
+- Always include `author`. If nothing qualifies, use `[]`.
+- Best first: the first quote is featured on the Overview.
+
+Tone: encouraging, specific and actionable, matched to `depth`. Write in your
+own words.
+
+## Step 6: Build the App (MANDATORY)
 
 You MUST call `run_script`. Never write HTML yourself.
-Use this exact signature:
 
 ```python
 run_script(
     script_path="build_app.py",
     inputs={
-        "topic": "<specific topic>",
-        "goal": "<goal>",
-        "depth": "<depth>",
-        "videos": [ ...the video objects from Step 3... ],
-        "web_sources": [ ...from Step 4... ],
-        "key_lessons": [ ...from Step 4... ],
-        "action_steps": [ ...from Step 4... ],
-        "expert_quotes": [ ...from Step 4... ]
+        "topic": "...", "goal": "...", "depth": "...",
+        "archetype": "...", "lang": "en", "labels": {}, "notice": "",
+        "assumptions": [],
+        "videos": [], "web_sources": [], "key_lessons": [],
+        "action_steps": [], "expert_quotes": [],
+        "schedule": [], "checklist": [], "budget": {}, "deadlines": []
     }
 )
 ```
@@ -149,40 +262,71 @@ run_script(
 ### Pre-flight checklist (verify before every call, including retries)
 
 1. `script_path` is present and equals `"build_app.py"`.
-2. `topic`, `goal`, `depth`, `videos`, `web_sources`, `key_lessons`,
-   `action_steps`, and `expert_quotes` are all keys **inside** `inputs`.
-   Nothing but `script_path` and `inputs` sits at the top level.
-3. `topic` is the user's specific subject, not a placeholder.
-4. `videos` is a list (use `[]` if every video call failed), never omitted.
+2. All keys above are inside `inputs`. Only `script_path` and `inputs` sit at
+   the top level.
+3. `topic` is the real subject, not a placeholder, passed raw (the script
+   escapes it).
+4. Every list key is present and is a list (use `[]` when empty), never
+   omitted and never a string. Unused `budget` is `{}`.
+5. Every video URL is a real `https://` result; every timestamp is `m:ss` or
+   `h:mm:ss`; every deadline date is a valid `YYYY-MM-DD`.
+6. No field contains HTML, markdown or invented content.
 
 ### If run_script returns an error
 
 Rebuild the **complete** payload from the checklist and resend it. Never
-resend only the part the error mentions. Fixing one field must not drop
-the others.
+resend only the part the error mentions. Fixing one field must not drop the
+others. Retry at most once. A non-empty `warnings` list is not a failure: the
+page was built and some input was skipped. Do not retry for warnings alone.
 
-## Step 6 — Return the Result
+## Step 7: Return the Result
 
-Return the `run_script` result JSON exactly as-is. It contains
-`{"html_app": "...", "summary": "..."}`. Output must be valid JSON starting
-with `{` and ending with `}`, with no markdown or wrapper text.
+Return the `run_script` JSON exactly as-is, starting with `{` and ending with
+`}`, with no markdown or wrapper text. Before returning, confirm `html_app` is
+non-empty and `summary` does not say the build failed. If it did, rebuild the
+complete payload and call `run_script` once more.
+
+## What the App Renders (Output Contract)
+
+Describe only these features; do not promise others.
+
+- **Tabs** (keyboard accessible, shown only when they have content): Overview,
+  Key lessons, Schedule, Action plan, Checklists, Budget, Deadlines, Notes &
+  journal, Resources. Action plan and Notes & journal always appear.
+- **Overview:** headline, goal, depth label, notice, assumptions, editable
+  finish line and target date, quick-jump counts, preview of the first 3
+  lessons, and the first quote.
+- **Key lessons:** lesson cards with tips, source and a personal note, plus an
+  "In their words" quotes section.
+- **Action plan:** checkable steps with duration, drill, target date and
+  notes, plus user-added milestones.
+- **Schedule, Checklists, Deadlines:** checkable items; schedule items have
+  notes and a "Verify" flag where set.
+- **Budget:** estimates, editable actual costs, live totals.
+- **Progress bar:** one live bar across steps, schedule items, checklist items
+  and deadlines.
+- **Notes & journal:** auto-built timeline (including dated deadlines),
+  collected notes, and a freeform journal.
+- **Resources:** click-to-play video cards with timestamp links, summaries and
+  takeaways, plus a further-reading list.
+- **Saving:** a save bar appears after edits and saves a new version
+  (downloads the file when standalone). Drafts autosave locally.
+- **Look:** self-contained, print-friendly, mobile-responsive, follows the
+  viewer's light/dark setting, accent color derived from the topic. Design is
+  fixed by the script, so never promise a custom theme, animated tab
+  transitions, live prices, bookings or calendar export.
 
 ## Quality Rules
 
 1. Never write HTML yourself. Always call `run_script("build_app.py")`.
-2. Never fabricate transcript content.
+2. Never fabricate transcript content, timestamps, quotes, prices or sources.
 3. Never call `call_synaptix_tool` with an `mcp_skill` tool type (recursion guard).
 4. Use exact tool names: `tavily_search`, `eye_get_video_transcript`, `eye_scrape_url`.
-5. If all video calls fail, still build the app with `"videos": []`.
-6. Always produce a complete app, even after research failures.
-7. `topic` is HTML-escaped inside `build_app.py`; pass it raw.
-
-## Output Contract
-
-- 4 tabs: Overview · Key Lessons · Action Plan · Resources
-- Checkbox-based live progress tracker
-- Video cards with timestamp links, transcript summary, and takeaways
-- Rich lesson cards with tips and source attribution
-- Action steps with specific practice drills
-- Animated tab transitions
-- Dark premium aesthetic, self-contained, mobile-responsive
+5. If all video calls fail or videos aren't suitable, still build the app with
+   `"videos": []`.
+6. Always produce a complete app, even after research failures. If research is
+   thin, prefer fewer accurate items over padding.
+7. Pass all text as plain text; the script handles escaping.
+8. Synthesize, don't copy: lessons and summaries are in your own words.
+9. Keep learner-facing text encouraging, specific and actionable, matched to
+   `depth`.
