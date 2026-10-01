@@ -1,65 +1,37 @@
+"""Mentor Guide HTML app builder (v6.1, sandbox-lean).
+
+Runtime contract: SkillExecutor injects a global `inputs`; this script sets a
+global `result` = {"html_app", "summary", "warnings"}. Stdlib only: json, re,
+html, hashlib. html_app is wrapped in synaptix-html-app markers.
+
+Client state: the DOM is the source of truth. Every editable control has a
+stable data-f key: s0-done|due|note (steps), c1-title|done|due|note (user
+milestones), l0-note, v0-note, d0-1-done|note (schedule), k0-1-done
+(checklist), b0-actual (budget), x0-done (deadlines), target, target-text,
+journal. Normalizers return HTML-escaped text, so renderers only interpolate.
 """
-build_app.py - Mentor Guide HTML app builder (v6.0, production)
-
-Runtime contract (unchanged):
-  - Executed by SkillExecutor via run_script(); a global `inputs` dict is injected.
-  - stdlib only: json, re, html, hashlib.
-  - Sets a global `result` dict: {"html_app": str, "summary": str, "warnings": [str]}
-  - html_app is wrapped in <!-- synaptix-html-app --> ... <!-- /synaptix-html-app -->
-
-v6 turns the learning guide into a general guide builder. All new inputs are
-OPTIONAL; payloads from v5 render as before.
-  - archetype + labels: wording that fits the topic (trip, project, habit ...)
-  - notice + assumptions + lang
-  - new sections: schedule (days/phases), checklist, budget (live totals),
-    deadlines
-  - progress counts steps, schedule items, checklist items and deadlines
-  - fixes: panel margin leak, panel focus ring, mobile tab scroll, 44px
-    targets, print stylesheet; over-long quotes are dropped
-
-Client state design (unchanged from v5, read before changing the JS):
-  - The DOM is the source of truth. Every user-editable control carries a
-    stable `data-f` key. Key families:
-        s{i}-done|due|note   action steps       c{n}-title|done|due|note  user milestones
-        l{i}-note            lessons            v{i}-note                  videos
-        d{g}-{i}-done|note   schedule items     k{g}-{i}-done              checklist items
-        b{i}-actual          budget actuals     x{i}-done                  deadlines
-        target, target-text, journal
-  - Drafts autosave to localStorage keyed by guide id AND version.
-  - Journal entries are rebuilt from the DOM whenever the tab opens.
-"""
-from __future__ import annotations
-
 import hashlib
 import html as _html
 import json
 import re
 
-# -- Config -------------------------------------------------------------------
-
-MAX_ITEMS = 60          # per list
-MAX_TEXT = 6000         # per text field
+MAX_ITEMS = 60
+MAX_TEXT = 6000
 MAX_TITLE = 300
-MAX_NOTE = 4000         # user note fields (textarea maxlength)
-MAX_LABEL = 120         # user single-line fields
-MAX_QUOTE_WORDS = 30    # longer quotes are dropped (copyright / fabrication guard)
-# postMessage target for the save bar. "*" works anywhere but lets any parent
-# frame read the user's notes; set to the host's exact origin in production.
+MAX_QUOTE_WORDS = 30
+# Set to the host's exact origin in production: the save bar posts user notes.
 SAVE_TARGET_ORIGIN = "*"
 SAVE_MESSAGE_TYPE = "synaptix-html-app-save"
-WEB_FONTS = True        # False => system fonts only, zero external requests
-HUES = (4, 22, 150, 175, 200, 222, 340)   # avoids stock indigo/purple and lime
+WEB_FONTS = True
+HUES = (4, 22, 150, 175, 200, 222, 340)
 DEPTHS = {"beginner": "Beginner", "intermediate": "Intermediate", "advanced": "Advanced"}
-
-ARCHETYPES = {"learn_skill", "understand_subject", "exam_prep", "plan_trip",
-              "plan_event", "build_project", "decision", "habit", "other"}
-LABEL_DEFAULTS = {
+LABELS = {
     "overview": "Overview", "lessons": "Key lessons", "action": "Action plan",
     "schedule": "Schedule", "checklist": "Checklists", "budget": "Budget",
     "deadlines": "Deadlines", "step": "Step", "drill": "Practice drill", "tips": "Try this",
 }
-# Default wording per archetype. Explicit `labels` input overrides these.
-ARCH_LABELS = {
+ARCH = {
+    "learn_skill": {},
     "understand_subject": {"drill": "Activity", "tips": "Key points"},
     "exam_prep": {"action": "Study plan", "drill": "Study task", "tips": "Key points"},
     "plan_trip": {"action": "Before you go", "drill": "Details", "tips": "Good to know", "step": "Task"},
@@ -67,643 +39,485 @@ ARCH_LABELS = {
     "build_project": {"action": "Milestones", "drill": "Deliverable", "tips": "Watch out for", "step": "Milestone"},
     "decision": {"action": "How to decide", "drill": "Do this", "tips": "Consider"},
     "habit": {"action": "Experiments", "drill": "Experiment", "tips": "Try this", "step": "Experiment"},
+    "other": {},
 }
-_L = dict(LABEL_DEFAULTS)   # active labels, reset once per build()
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_YT_HOSTS = {
-    "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
-    "youtu.be", "www.youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com",
-}
+_URL = re.compile(r"^https?://([^/?#:]+)(?::\d+)?(/[^?#]*)?(?:\?([^#]*))?", re.IGNORECASE)
+_YT_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+             "youtu.be", "www.youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com")
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _TS = re.compile(r"^(?:\d{1,2}:)?\d{1,2}:\d{2}$")
 _TS_LINE = re.compile(r"^\s*\[?((?:\d{1,2}:)?\d{1,2}:\d{2})\]?\s*[-\u2013\u2014:]?\s*(.*)$")
 _LANG = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
-_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$")
+
+_L = {}   # active labels (already escaped), refreshed once per build
+W = []    # warnings
 
 
-# -- Coercion helpers ---------------------------------------------------------
+def warn(msg):
+    if len(W) < 25:
+        W.append(msg)
 
-def esc(value) -> str:
-    return _html.escape("" if value is None else str(value), quote=True)
+
+# -- helpers ------------------------------------------------------------------
+
+def esc(v):
+    return _html.escape("" if v is None else str(v), quote=True)
 
 
-def txt(value, limit: int = MAX_TEXT) -> str:
-    """Coerce scalars to clean text. Containers are ignored, never stringified."""
-    if value is None or isinstance(value, (dict, list, tuple, set)):
+def txt(v, n=MAX_TEXT):
+    if v is None or isinstance(v, (dict, list, tuple, set)):
         return ""
-    s = _CTRL.sub("", str(value)).strip()
-    return s[:limit].rstrip() if len(s) > limit else s
+    return _CTRL.sub("", str(v)).strip()[:n].rstrip()
 
 
-def clip(s: str, n: int) -> str:
-    if len(s) <= n:
-        return s
-    cut = s[:n].rsplit(" ", 1)[0].rstrip(",;:.- ")
-    return cut + "\u2026"
+def tx(v, n=MAX_TEXT):
+    return esc(txt(v, n))
 
 
-def as_list(value) -> list:
-    """list | dict | JSON string | plain string | None -> list (capped)."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        v = value.strip()
-        if v[:1] in "[{":
-            try:
-                return as_list(json.loads(v))
-            except ValueError:
-                pass
-        return [v] if v else []
-    if isinstance(value, dict):
-        return [value]
-    if isinstance(value, (list, tuple)):
-        return list(value)[:MAX_ITEMS]
-    return []
+def clip(s, n):
+    return s if len(s) <= n else s[:n].rsplit(" ", 1)[0].rstrip(",;:.- ") + "\u2026"
 
 
-def str_list(value, limit: int = 500) -> list:
-    """Accept list of scalars, or a newline/bullet separated string."""
+def as_list(v):
+    if isinstance(v, str):
+        s = v.strip()
+        try:
+            v = json.loads(s) if s[:1] in ("[", "{") else ([s] if s else [])
+        except ValueError:
+            v = [s]
+    if isinstance(v, dict):
+        return [v]
+    return list(v)[:MAX_ITEMS] if isinstance(v, (list, tuple)) else []
+
+
+def strs(v, n=500):
+    if isinstance(v, str):
+        v = re.split(r"\n+", v)
     out = []
-    items = value if isinstance(value, (list, tuple)) else (
-        re.split(r"\n+", value) if isinstance(value, str) else []
-    )
-    for item in items[:MAX_ITEMS]:
-        t = re.sub(r"^\s*(?:[-*\u2022]|\d+[.)])\s*", "", txt(item, limit))
+    for item in (v if isinstance(v, (list, tuple)) else [])[:MAX_ITEMS]:
+        t = re.sub(r"^\s*(?:[-*\u2022]|\d+[.)])\s*", "", txt(item, n))
         if t:
-            out.append(t)
+            out.append(esc(t))
     return out
 
 
-def first(d: dict, *keys, default=None):
+def first(d, *keys):
     for k in keys:
-        v = d.get(k)
-        if v not in (None, "", [], {}):
-            return v
-    return default
+        if d.get(k) not in (None, "", [], {}):
+            return d[k]
+    return ""
 
 
-_URL_RE = re.compile(r"^(https?)://([^/?#:]+)(?::\d+)?(/[^?#]*)?(?:\?([^#]*))?", re.IGNORECASE)
+def safe_url(u):
+    u = _CTRL.sub("", str(u or "")).strip()
+    return u if u and len(u) <= 2048 and _URL.match(u) else ""
 
 
-def safe_url(url) -> str:
-    """http(s) only, with a host. Anything else returns ''."""
-    u = _CTRL.sub("", str(url or "")).strip()
-    if not u or len(u) > 2048 or not _URL_RE.match(u):
+def youtube_id(u):
+    m = _URL.match(u)
+    if not m or m.group(1).lower() not in _YT_HOSTS:
         return ""
-    return u
-
-
-def youtube_id(url: str):
-    u = _CTRL.sub("", str(url or "")).strip()
-    m = _URL_RE.match(u)
-    if not m:
-        return None
-    host = m.group(2).lower()
-    if host not in _YT_HOSTS:
-        return None
-    path = m.group(3) or "/"
-    query = m.group(4) or ""
-    cand = None
+    host, path, q = m.group(1).lower(), m.group(2) or "/", m.group(3) or ""
     if host.endswith("youtu.be"):
-        cand = path.lstrip("/")[:11]
+        c = path.lstrip("/")[:11]
     else:
-        qv = re.search(r"(?:^|[?&])v=([^&#]+)", query)
-        if qv:
-            cand = qv.group(1)
-        else:
-            em = re.match(r"^/(?:embed|shorts|live|v)/([^/?#]+)", path)
-            cand = em.group(1) if em else None
-    return cand if cand and _YT_ID.match(cand) else None
+        mv = re.search(r"(?:^|&)v=([^&#]+)", q) or re.match(r"^/(?:embed|shorts|live|v)/([^/?#]+)", path)
+        c = mv.group(1) if mv else ""
+    return c if _YT_ID.match(c) else ""
 
 
-def ts_seconds(ts: str):
+def secs(ts):
     ts = txt(ts, 12)
-    if ts.isdigit():
-        return int(ts)
     if not _TS.match(ts):
         return None
-    secs = 0
-    for part in ts.split(":"):
-        secs = secs * 60 + int(part)
-    return secs
+    n = 0
+    for p in ts.split(":"):
+        n = n * 60 + int(p)
+    return n
 
 
-def topic_hue(topic: str) -> int:
+def hue(topic):
     return HUES[int(hashlib.sha256(topic.encode("utf-8")).hexdigest(), 16) % len(HUES)]
 
 
-def valid_date(d: str) -> bool:
-    return bool(_DATE.match(d)) and 1 <= int(d[5:7]) <= 12 and 1 <= int(d[8:10]) <= 31
+def num(v):
+    try:
+        n = float(re.sub(r"[^0-9.]", "", "" if v is None or isinstance(v, (dict, list, bool)) else str(v)))
+    except ValueError:
+        return None
+    return n if n < 1e12 else None
 
 
-# -- Normalizers --------------------------------------------------------------
+# -- normalizers (all text returned escaped) ------------------------------------
 
-def norm_blueprint(inputs, warn):
-    a = txt(inputs.get("archetype"), 40).lower()
-    if a and a not in ARCHETYPES:
-        warn(f"unknown archetype '{a}'; using 'other'")
+def blueprint(inp):
+    a = txt(inp.get("archetype"), 40).lower()
+    if a and a not in ARCH:
+        warn("unknown archetype '%s'; using 'other'" % a)
         a = "other"
-    labels = dict(LABEL_DEFAULTS)
-    labels.update(ARCH_LABELS.get(a, {}))
-    raw = inputs.get("labels")
+    lab = dict(LABELS)
+    lab.update(ARCH.get(a, {}))
+    raw = inp.get("labels")
     if isinstance(raw, dict):
-        for k, v in raw.items():
-            if k in LABEL_DEFAULTS and txt(v, 30):
-                labels[k] = txt(v, 30)
-    lang = txt(inputs.get("lang"), 12)
-    return {
-        "archetype": a or "learn_skill",
-        "labels": labels,
-        "notice": txt(inputs.get("notice"), 600),
-        "assumptions": str_list(inputs.get("assumptions"), 160)[:8],
-        "lang": lang if _LANG.match(lang) else "en",
-    }
+        for k in raw:
+            if k in LABELS and txt(raw[k], 30):
+                lab[k] = txt(raw[k], 30)
+    _L.clear()
+    for k in lab:
+        _L[k] = esc(lab[k])
+    lang = txt(inp.get("lang"), 12)
+    return tx(inp.get("notice"), 600), strs(inp.get("assumptions"), 160)[:8], lang if _LANG.match(lang) else "en"
 
 
-def norm_lessons(raw, warn):
+def lessons(raw):
     out = []
-    for i, item in enumerate(as_list(raw)):
-        if isinstance(item, dict):
-            title = txt(first(item, "title", "name", default=""), MAX_TITLE)
-            desc = txt(first(item, "description", "desc", "text", "lesson", default=""))
-            tips = str_list(first(item, "tips", "key_points", "action_points", "takeaways", default=[]))
-            source = txt(first(item, "source", "source_video", "channel", "author", default=""), 120)
-        else:
-            title, desc, tips, source = "", txt(item), [], ""
-        if title or desc:
-            out.append({"title": title, "desc": desc, "tips": tips, "source": source})
-        else:
-            warn(f"key_lessons[{i}] had no usable text and was skipped")
-    return out
-
-
-def norm_quotes(raw, warn):
-    out = []
-    for i, item in enumerate(as_list(raw)):
-        if isinstance(item, dict):
-            text, author = txt(first(item, "text", "quote", default=""), 600), txt(item.get("author", ""), 120)
-        else:
-            text, author = txt(item, 600), ""
-        if not text:
-            warn(f"expert_quotes[{i}] had no text and was skipped")
-        elif len(text.split()) > MAX_QUOTE_WORDS:
-            warn(f"expert_quotes[{i}] is longer than {MAX_QUOTE_WORDS} words and was skipped")
-        else:
-            out.append({"text": text, "author": author})
-    return out
-
-
-def norm_steps(raw, warn):
-    out = []
-    for i, item in enumerate(as_list(raw)):
-        if isinstance(item, dict):
-            title = txt(item.get("title", ""), MAX_TITLE)
-            desc = txt(first(item, "description", "desc", default=""))
-            dur = txt(item.get("duration", ""), 40)
-            drill = txt(first(item, "details", "practice_drill", "drill", default=""))
-        else:
-            title, desc, dur, drill = txt(item, MAX_TITLE), "", "", ""
-        if not (title or desc):
-            warn(f"action_steps[{i}] had no usable text and was skipped")
+    for i, it in enumerate(as_list(raw)):
+        d = it if isinstance(it, dict) else {"description": it}
+        desc = txt(first(d, "description", "desc", "text"))
+        title = txt(first(d, "title", "name"), MAX_TITLE) or clip(desc, 60)
+        if not title:
+            warn("key_lessons[%d] had no usable text and was skipped" % i)
             continue
-        out.append({"title": title or f"{_L['step']} {len(out) + 1}", "desc": desc, "dur": dur, "drill": drill})
+        out.append((esc(title), esc(desc), strs(first(d, "tips", "key_points")),
+                    tx(first(d, "source", "channel", "author"), 120), esc(clip(desc, 170))))
     return out
 
 
-def _norm_timestamps(raw):
+def quotes(raw):
     out = []
-    for item in as_list(raw):
-        if isinstance(item, dict):
-            t, label = txt(first(item, "time", "t", "timestamp", default=""), 12), txt(item.get("label", ""), 200)
+    for i, it in enumerate(as_list(raw)):
+        d = it if isinstance(it, dict) else {"text": it}
+        t = txt(first(d, "text", "quote"), 600)
+        if not t or len(t.split()) > MAX_QUOTE_WORDS:
+            warn("expert_quotes[%d] was empty or longer than %d words and was skipped" % (i, MAX_QUOTE_WORDS))
         else:
-            m = _TS_LINE.match(txt(item, 240))
-            t, label = (m.group(1), m.group(2)) if m else ("", "")
-        secs = ts_seconds(t)
-        if secs is not None:
-            out.append({"time": t, "secs": secs, "label": label})
+            out.append((esc(t), tx(d.get("author"), 120)))
     return out
 
 
-def norm_videos(raw, warn):
+def steps(raw):
+    out = []
+    for i, it in enumerate(as_list(raw)):
+        d = it if isinstance(it, dict) else {"title": it}
+        t = txt(d.get("title"), MAX_TITLE)
+        desc = txt(first(d, "description", "desc"))
+        if not (t or desc):
+            warn("action_steps[%d] had no usable text and was skipped" % i)
+            continue
+        out.append((esc(t) if t else "%s %d" % (_L["step"], len(out) + 1), esc(desc),
+                    tx(d.get("duration"), 40), tx(first(d, "details", "drill"))))
+    return out
+
+
+def stamps(raw):
+    out = []
+    for it in as_list(raw):
+        if isinstance(it, dict):
+            t, lab = txt(first(it, "time", "timestamp"), 12), txt(it.get("label"), 200)
+        else:
+            m = _TS_LINE.match(txt(it, 240))
+            t, lab = (m.group(1), m.group(2)) if m else ("", "")
+        s = secs(t)
+        if s is not None:
+            out.append((esc(t), s, esc(lab)))
+    return out
+
+
+def videos(raw):
     out, seen = [], set()
-    for i, item in enumerate(as_list(raw)):
-        if not isinstance(item, dict):
-            warn(f"videos[{i}] is not an object and was skipped")
-            continue
-        url = safe_url(item.get("url"))
-        if not url:
-            warn(f"videos[{i}] has no valid http(s) url and was skipped")
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        out.append({
-            "url": url,
-            "vid": youtube_id(url),
-            "title": txt(item.get("title", ""), MAX_TITLE) or "Untitled video",
-            "channel": txt(first(item, "channel", "author", default=""), 120),
-            "duration": txt(item.get("duration", ""), 30),
-            "summary": txt(first(item, "transcript_summary", "summary", default=""), 1200),
-            "takeaways": str_list(first(item, "takeaways", "key_takeaways", "notes", default=[])),
-            "stamps": _norm_timestamps(item.get("key_timestamps")),
-        })
+    for i, it in enumerate(as_list(raw)):
+        u = safe_url(it.get("url")) if isinstance(it, dict) else ""
+        if not u:
+            warn("videos[%d] has no valid http(s) url and was skipped" % i)
+        elif u not in seen:
+            seen.add(u)
+            out.append((esc(u), youtube_id(u), tx(it.get("title"), MAX_TITLE) or "Untitled video",
+                        tx(first(it, "channel", "author"), 120), tx(it.get("duration"), 30),
+                        tx(first(it, "transcript_summary", "summary"), 1200),
+                        strs(first(it, "takeaways", "notes")), stamps(it.get("key_timestamps"))))
     return out
 
 
-def norm_web(raw, warn):
+def web(raw):
     flat = []
-    for item in as_list(raw):
-        if isinstance(item, dict) and isinstance(item.get("results"), list):
-            flat.extend(r for r in item["results"][:MAX_ITEMS] if isinstance(r, dict))
+    for it in as_list(raw):
+        if isinstance(it, dict) and isinstance(it.get("results"), list):
+            flat += [r for r in it["results"][:MAX_ITEMS] if isinstance(r, dict)]
         else:
-            flat.append(item)
+            flat.append(it)
     out, seen = [], set()
-    for i, item in enumerate(flat):
-        if not isinstance(item, dict):
-            continue
-        url = safe_url(item.get("url"))
-        if not url:
-            warn(f"web_sources[{i}] has no valid http(s) url and was skipped")
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        m_host = _URL_RE.match(url)
-        host = (m_host.group(2).lower() if m_host else "").removeprefix("www.")
-        out.append({"url": url, "title": txt(item.get("title", ""), MAX_TITLE) or host, "host": host})
+    for i, it in enumerate(flat):
+        u = safe_url(it.get("url")) if isinstance(it, dict) else ""
+        if not u:
+            warn("web_sources[%d] has no valid http(s) url and was skipped" % i)
+        elif u not in seen:
+            seen.add(u)
+            host = _URL.match(u).group(1).lower().removeprefix("www.")
+            out.append((esc(u), tx(it.get("title"), MAX_TITLE) or esc(host), esc(host)))
     return out[:MAX_ITEMS]
 
 
-def norm_schedule(raw, warn):
+def schedule(raw):
     out = []
     for gi, g in enumerate(as_list(raw)):
-        if not isinstance(g, dict):
-            warn(f"schedule[{gi}] is not an object and was skipped")
-            continue
         items = []
-        for it in as_list(first(g, "items", "activities", default=[])):
-            if isinstance(it, dict):
-                title = txt(first(it, "title", "name", default=""), MAX_TITLE)
-                note = txt(first(it, "note", "details", "description", default=""), 800)
-                time, verify = txt(it.get("time", ""), 40), bool(it.get("verify"))
-            else:
-                title, note, time, verify = txt(it, MAX_TITLE), "", "", False
-            if title:
-                items.append({"title": title, "note": note, "time": time, "verify": verify})
+        for it in (as_list(first(g, "items", "activities")) if isinstance(g, dict) else []):
+            d = it if isinstance(it, dict) else {"title": it}
+            t = txt(first(d, "title", "name"), MAX_TITLE)
+            if t:
+                items.append((esc(t), tx(first(d, "note", "details"), 800), tx(d.get("time"), 40), bool(d.get("verify"))))
         if items:
-            out.append({
-                "title": txt(first(g, "title", "day", "phase", default=""), MAX_TITLE) or f"Day {len(out) + 1}",
-                "summary": txt(g.get("summary", ""), 300),
-                "items": items,
-            })
+            out.append((tx(first(g, "title", "day", "phase"), MAX_TITLE) or "Day %d" % (len(out) + 1),
+                        tx(g.get("summary"), 300), items))
         else:
-            warn(f"schedule[{gi}] had no items and was skipped")
+            warn("schedule[%d] had no items and was skipped" % gi)
     return out
 
 
-def norm_checklist(raw, warn):
+def checklist(raw):
     out = []
     for gi, g in enumerate(as_list(raw)):
-        if not isinstance(g, dict):
-            warn(f"checklist[{gi}] is not an object and was skipped")
-            continue
-        items = str_list(first(g, "items", default=[]), 200)
+        items = strs(g.get("items"), 200) if isinstance(g, dict) else []
         if items:
-            out.append({"title": txt(g.get("title", ""), MAX_TITLE) or "Checklist", "items": items})
+            out.append((tx(g.get("title"), MAX_TITLE) or "Checklist", items))
         else:
-            warn(f"checklist[{gi}] had no items and was skipped")
+            warn("checklist[%d] had no items and was skipped" % gi)
     return out
 
 
-def _num(v):
-    s = re.sub(r"[^0-9.]", "", "" if v is None or isinstance(v, (dict, list, bool)) else str(v))
-    if not s:
-        return None
-    try:
-        n = float(s)
-    except ValueError:
-        return None
-    return n if 0 <= n < 1e12 else None
-
-
-def norm_budget(raw, warn):
-    if not isinstance(raw, dict):
-        return None
+def budget(raw):
     items = []
-    for i, it in enumerate(as_list(raw.get("items"))):
-        if not isinstance(it, dict):
-            continue
-        label = txt(first(it, "label", "title", "name", default=""), 160)
-        if label:
-            items.append({"label": label, "est": _num(first(it, "estimate", "amount", default=None)),
-                          "verify": bool(it.get("verify"))})
-        else:
-            warn(f"budget.items[{i}] had no label and was skipped")
-    return {"cur": txt(raw.get("currency"), 8), "items": items} if items else None
+    if isinstance(raw, dict):
+        for i, it in enumerate(as_list(raw.get("items"))):
+            lab = txt(first(it, "label", "title", "name"), 160) if isinstance(it, dict) else ""
+            if lab:
+                items.append((esc(lab), num(first(it, "estimate", "amount")), bool(it.get("verify"))))
+            else:
+                warn("budget.items[%d] had no label and was skipped" % i)
+    return (tx(raw.get("currency"), 8), items) if items else None
 
 
-def norm_deadlines(raw, warn):
+def deadlines(raw):
     out = []
     for i, it in enumerate(as_list(raw)):
-        if not isinstance(it, dict):
-            continue
-        title = txt(first(it, "title", "name", default=""), MAX_TITLE)
-        if not title:
-            warn(f"deadlines[{i}] had no title and was skipped")
+        t = txt(first(it, "title", "name"), MAX_TITLE) if isinstance(it, dict) else ""
+        if not t:
+            warn("deadlines[%d] had no title and was skipped" % i)
             continue
         d = txt(it.get("date"), 10)
-        if d and not valid_date(d):
-            warn(f"deadlines[{i}] date '{d}' is not YYYY-MM-DD and was ignored")
+        if d and not _DATE.match(d):
+            warn("deadlines[%d] date is not a valid YYYY-MM-DD and was ignored" % i)
             d = ""
-        out.append({"title": title, "date": d, "note": txt(it.get("note", ""), 400)})
-    out.sort(key=lambda x: (x["date"] == "", x["date"]))   # stable; keys follow this order
+        out.append((d or "9999", d, esc(t), tx(it.get("note"), 400)))
+    out.sort()
     return out
 
 
-# -- Rendering ----------------------------------------------------------------
+# -- static markup --------------------------------------------------------------
 
-def paras(text: str) -> str:
-    return "".join(f"<p>{esc(p.strip())}</p>" for p in re.split(r"\n\s*\n", text) if p.strip())
-
-
-def render_quote(q: dict, cls: str = "quote") -> str:
-    cite = f"<figcaption>{esc(q['author'])}</figcaption>" if q["author"] else ""
-    return f'<figure class="{cls}"><blockquote><p>{esc(q["text"])}</p></blockquote>{cite}</figure>'
-
-
-def note_box(field: str, empty_label: str, aria: str, placeholder: str = "") -> str:
-    """Expandable in-place note. JS swaps the summary text and opens filled notes."""
-    return (
-        f'<details class="note"><summary data-empty="{esc(empty_label)}" data-filled="Your note">{esc(empty_label)}</summary>'
-        f'<textarea class="note-input" data-f="{field}" maxlength="{MAX_NOTE}" rows="3" '
-        f'aria-label="{esc(aria)}" placeholder="{esc(placeholder)}"></textarea></details>'
-    )
-
-
-def render_overview(ctx) -> str:
-    c = ctx
-    bp = c["bp"]
-    level = f'<p class="level">{esc(c["level"])} guide</p>' if c["level"] else ""
-    goal = c["goal"] or "Learn this topic and put it to work."
-    hero_quote = render_quote(c["quotes"][0], "quote hero-quote") if c["quotes"] else ""
-
-    sched_n = sum(len(g["items"]) for g in c["schedule"])
-    check_n = sum(len(g["items"]) for g in c["checklist"])
-    jumps = []
-    for name, n, label in (
-        ("lessons", len(c["lessons"]), _L["lessons"]),
-        ("schedule", sched_n, _L["schedule"]),
-        ("action", len(c["steps"]), _L["action"]),
-        ("checklist", check_n, _L["checklist"]),
-        ("budget", len(c["budget"]["items"]) if c["budget"] else 0, _L["budget"]),
-        ("deadlines", len(c["deadlines"]), _L["deadlines"]),
-        ("resources", len(c["videos"]) + len(c["web"]), "Resources"),
-    ):
-        if n:
-            jumps.append(
-                f'<li><button type="button" class="jump" data-goto="{name}">'
-                f'{esc(label)} <strong>{n}</strong></button></li>'
-            )
-    jump_html = f'<ul class="jumps">{"".join(jumps)}</ul>' if jumps else ""
-
-    notice = (f'<aside class="notice" role="note"><strong>Before you start.</strong> {esc(bp["notice"])}</aside>'
-              if bp["notice"] else "")
-    assume = ""
-    if bp["assumptions"]:
-        assume = ('<section class="assume" aria-labelledby="as-h"><h2 id="as-h">Assumptions</h2><ul>'
-                  + "".join(f"<li>{esc(a)}</li>" for a in bp["assumptions"]) + "</ul></section>")
-
-    preview = ""
-    if c["lessons"]:
-        rows = []
-        for l in c["lessons"][:3]:
-            head = l["title"] or clip(l["desc"], 70)
-            body = clip(l["desc"], 170) if l["title"] else ""
-            rows.append(f"<li><strong>{esc(head)}</strong>{(' ' + esc(body)) if body else ''}</li>")
-        preview = f'<section class="preview" aria-labelledby="pv-h"><h2 id="pv-h">Worth knowing first</h2><ul>{"".join(rows)}</ul></section>'
-
-    target = (
-        '<div class="target">'
-        '<label class="field" for="target-text"><span>Your finish line</span>'
-        f'<input type="text" class="text-in" id="target-text" data-f="target-text" maxlength="{MAX_LABEL}" '
-        'placeholder="What does success look like?"></label>'
-        '<label class="field" for="target"><span>Target completion date</span>'
-        '<input type="date" class="date" id="target" data-f="target"></label></div>'
-    )
-
-    return (
-        '<section class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">'
-        f'<header class="hero"><div class="hero-meta">{level}<p class="ver" id="ver">Version 1, AI original</p></div>'
-        f'<h1>{esc(c["topic"])}</h1><p class="goal">{esc(goal)}</p>{target}{hero_quote}</header>'
-        f'{notice}{assume}{jump_html}{preview}</section>'
-    )
+PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>'
+BADGE = '<span class="badge" id="note-count" hidden>0</span>'
+TARGET = ('<div class="target"><label class="field" for="target-text"><span>Your finish line</span>'
+          '<input type="text" class="text-in" id="target-text" data-f="target-text" maxlength="120" '
+          'placeholder="What does success look like?"></label>'
+          '<label class="field" for="target"><span>Target completion date</span>'
+          '<input type="date" class="date" id="target" data-f="target"></label></div>')
+NOTES = ('<h2>Notes and journal</h2><p class="j-summary" id="j-summary"></p>'
+         '<section aria-labelledby="j1"><h3 class="j-h" id="j1">Timeline</h3><div id="j-timeline"></div></section>'
+         '<section aria-labelledby="j2"><h3 class="j-h" id="j2">Your notes</h3><div id="j-takeaways"></div></section>'
+         '<section aria-labelledby="j3"><h3 class="j-h" id="j3">Journal</h3>'
+         '<label class="sr-only" for="journal">Freeform journal</label>'
+         '<textarea class="journal" id="journal" data-f="journal" maxlength="16000" rows="10" '
+         'placeholder="What worked, what to change next."></textarea></section>')
+BUDGET_HEAD = ('</h2><div class="tablewrap"><table class="budget" id="budget" data-cur="')
+BUDGET_TOP = ('"><thead><tr><th scope="col">Item</th><th scope="col">Estimate</th><th scope="col">Actual</th></tr></thead><tbody>')
+BUDGET_FOOT = ('</tbody><tfoot><tr><th scope="row">Total</th><td id="b-est"></td><td id="b-act"></td></tr>'
+               '<tr><th scope="row">Difference (entered items)</th><td></td><td id="b-diff"></td></tr></tfoot></table></div>'
+               '<p class="g-sum">Estimates are planning figures. Confirm real prices before paying.</p>')
+SAVEBAR = ('<div class="savebar" id="savebar" role="region" aria-label="Save your changes" hidden>'
+           '<span id="bar-msg"></span><button type="button" class="savebtn" id="save">Save augmented guide</button></div>'
+           '<p class="sr-only" id="save-live" aria-live="polite"></p>')
 
 
-def render_lessons(ctx) -> str:
+# -- renderers (inputs are already escaped) -------------------------------------
+
+def panel(n, body):
+    h = "" if n == "overview" else " hidden"
+    return f'<section class="panel" id="panel-{n}" role="tabpanel" aria-labelledby="tab-{n}" tabindex="0"{h}>{body}</section>'
+
+
+def note(f, empty, aria, ph=""):
+    return (f'<details class="note"><summary data-empty="{empty}" data-filled="Your note">{empty}</summary>'
+            f'<textarea class="note-input" data-f="{f}" maxlength="4000" rows="3" aria-label="{aria}" placeholder="{ph}"></textarea></details>')
+
+
+def paras(t):
+    return "".join("<p>%s</p>" % p.strip() for p in re.split(r"\n\s*\n", t) if p.strip())
+
+
+def quote(q, cls="quote"):
+    t, a = q
+    cap = f"<figcaption>{a}</figcaption>" if a else ""
+    return f'<figure class="{cls}"><blockquote><p>{t}</p></blockquote>{cap}</figure>'
+
+
+def overview(topic, goal, level, notice, assume, jumps, les, qs):
+    lv = f'<p class="level">{level} guide</p>' if level else ""
+    hq = quote(qs[0], "quote hero-quote") if qs else ""
+    jb = "".join(f'<li><button type="button" class="jump" data-goto="{n}">{lab} <strong>{c}</strong></button></li>'
+                 for n, lab, c in jumps if c)
+    jh = f'<ul class="jumps">{jb}</ul>' if jb else ""
+    nt = f'<aside class="notice" role="note"><strong>Before you start.</strong> {notice}</aside>' if notice else ""
+    asm = ""
+    if assume:
+        asm = ('<section class="assume" aria-labelledby="as-h"><h2 id="as-h">Assumptions</h2><ul>'
+               + "".join("<li>%s</li>" % a for a in assume) + "</ul></section>")
+    pv = ""
+    if les:
+        pv = ('<section class="preview" aria-labelledby="pv-h"><h2 id="pv-h">Worth knowing first</h2><ul>'
+              + "".join(f"<li><strong>{t}</strong> {sn}</li>" for t, _, _, _, sn in les[:3]) + "</ul></section>")
+    return (f'<header class="hero"><div class="hero-meta">{lv}<p class="ver" id="ver">Version 1, AI original</p></div>'
+            f'<h1>{topic}</h1><p class="goal">{goal}</p>{TARGET}{hq}</header>{nt}{asm}{jh}{pv}')
+
+
+def lessons_panel(les, qs):
     items = []
-    for i, l in enumerate(ctx["lessons"]):
-        title = f'<h3>{esc(l["title"])}</h3>' if l["title"] else ""
-        src = f'<p class="source">From {esc(l["source"])}</p>' if l["source"] else ""
-        tips = ""
-        if l["tips"]:
-            lis = "".join(f"<li>{esc(t)}</li>" for t in l["tips"])
-            tips = f'<div class="tips"><p class="tips-h">{esc(_L["tips"])}</p><ul>{lis}</ul></div>'
-        note = note_box(f"l{i}-note", "Add your own note", "Your note on this lesson", "How will you apply this?")
-        items.append(f'<article class="lesson">{title}{src}<div class="prose">{paras(l["desc"])}</div>{tips}{note}</article>')
-    quotes = ""
-    if ctx["quotes"]:
-        quotes = ('<section class="quotes" aria-labelledby="q-h"><h2 id="q-h">In their words</h2>'
-                  + "".join(render_quote(q) for q in ctx["quotes"]) + "</section>")
-    return (
-        '<section class="panel" id="panel-lessons" role="tabpanel" aria-labelledby="tab-lessons" tabindex="0" hidden>'
-        f'<h2 class="sr-only">{esc(_L["lessons"])}</h2>{"".join(items)}{quotes}</section>'
-    )
+    for i, (t, d, tips, src, _) in enumerate(les):
+        s = f'<p class="source">From {src}</p>' if src else ""
+        tp = ""
+        if tips:
+            tp = (f'<div class="tips"><p class="tips-h">{_L["tips"]}</p><ul>'
+                  + "".join("<li>%s</li>" % x for x in tips) + "</ul></div>")
+        nb = note("l%d-note" % i, "Add your own note", "Your note on this lesson", "How will you apply this?")
+        items.append(f'<article class="lesson"><h3>{t}</h3>{s}<div class="prose">{paras(d)}</div>{tp}{nb}</article>')
+    qb = ""
+    if qs:
+        qb = ('<section class="quotes" aria-labelledby="q-h"><h2 id="q-h">In their words</h2>'
+              + "".join(quote(q) for q in qs) + "</section>")
+    return f'<h2 class="sr-only">{_L["lessons"]}</h2>' + "".join(items) + qb
 
 
-def render_step(key: str, n: int, s: dict, custom: bool = False) -> str:
-    """One action-plan row. `key` is s{i} for plan steps, c{n} for user milestones."""
-    dur = f'<span>{esc(s["dur"])}</span>' if s["dur"] else ""
-    desc = f'<div class="prose">{paras(s["desc"])}</div>' if s["desc"] else ""
-    drill = (f'<div class="drill"><p class="drill-h">{esc(_L["drill"])}</p><p>{esc(s["drill"])}</p></div>'
-             if s["drill"] else "")
+def step(key, n, s, custom=False):
+    t, d, dur, drill = s
+    du = f"<span>{dur}</span>" if dur else ""
+    ds = f'<div class="prose">{paras(d)}</div>' if d else ""
+    dr = f'<div class="drill"><p class="drill-h">{_L["drill"]}</p><p>{drill}</p></div>' if drill else ""
     if custom:
-        check_label = 'aria-label="Mark this milestone done"'
-        title = (f'<input type="text" class="custom-title" data-f="{key}-title" maxlength="{MAX_LABEL}" '
-                 'aria-label="Milestone name" placeholder="Name your milestone">')
+        ck = ' aria-label="Mark this milestone done"'
+        ti = (f'<input type="text" class="custom-title" data-f="{key}-title" maxlength="120" '
+              'aria-label="Milestone name" placeholder="Name your milestone">')
         yours = " (yours)"
-        remove = '<button type="button" class="ghost rm" data-remove>Remove</button>'
+        rm = '<button type="button" class="ghost rm" data-remove>Remove</button>'
         cls = "step custom"
     else:
-        check_label = ""
-        title = f'<label class="step-title" for="chk-{key}">{esc(s["title"])}</label>'
-        yours, remove, cls = "", "", "step"
-    plan = (
-        '<div class="step-plan">'
-        f'<label class="due-field" for="due-{key}"><span>Target date</span>'
-        f'<input type="date" class="date" id="due-{key}" data-f="{key}-due"></label>{remove}</div>'
-    )
-    note = note_box(f"{key}-note", "Add a note", "Your notes for this item",
-                    "What went well, what got in the way?")
-    return (
-        f'<li class="{cls}" data-key="{key}">'
-        f'<input type="checkbox" class="chk" id="chk-{key}" data-f="{key}-done" {check_label} aria-describedby="sm-{key}">'
-        f'<div class="step-body"><p class="step-meta" id="sm-{key}"><span>{esc(_L["step"])} <span class="num">{n}</span>{yours}</span>{dur}</p>'
-        f'{title}{desc}{drill}{plan}{note}</div></li>'
-    )
+        ck, yours, rm, cls = "", "", "", "step"
+        ti = f'<label class="step-title" for="chk-{key}">{t}</label>'
+    nb = note(f"{key}-note", "Add a note", "Your notes for this item", "What went well, what got in the way?")
+    return (f'<li class="{cls}" data-key="{key}"><input type="checkbox" class="chk" id="chk-{key}" data-f="{key}-done"{ck} aria-describedby="sm-{key}">'
+            f'<div class="step-body"><p class="step-meta" id="sm-{key}"><span>{_L["step"]} <span class="num">{n}</span>{yours}</span>{du}</p>'
+            f'{ti}{ds}{dr}<div class="step-plan"><label class="due-field" for="due-{key}"><span>Target date</span>'
+            f'<input type="date" class="date" id="due-{key}" data-f="{key}-due"></label>{rm}</div>{nb}</div></li>')
 
 
-def render_action(ctx) -> str:
-    rows = "".join(render_step(f"s{i}", i + 1, s) for i, s in enumerate(ctx["steps"]))
-    blank = {"title": "", "desc": "", "dur": "", "drill": ""}
-    template = render_step("__K__", 0, blank, custom=True)
-    return (
-        '<section class="panel" id="panel-action" role="tabpanel" aria-labelledby="tab-action" tabindex="0" hidden>'
-        f'<div class="action-head"><h2>{esc(_L["action"])}</h2>'
-        '<button type="button" class="ghost" id="reset">Uncheck all steps</button></div>'
-        f'<ol class="steps" id="steps">{rows}</ol>'
-        '<button type="button" class="add-step" id="add-step">Add your own milestone</button>'
-        f'<template id="tpl-step">{template}</template></section>'
-    )
+def action_panel(st):
+    rows = "".join(step("s%d" % i, i + 1, s) for i, s in enumerate(st))
+    blank = step("__K__", 0, ("", "", "", ""), True)
+    return (f'<div class="action-head"><h2>{_L["action"]}</h2>'
+            '<button type="button" class="ghost" id="reset">Uncheck all steps</button></div>'
+            f'<ol class="steps" id="steps">{rows}</ol>'
+            '<button type="button" class="add-step" id="add-step">Add your own milestone</button>'
+            f'<template id="tpl-step">{blank}</template>')
 
 
-def render_schedule(ctx) -> str:
-    groups = []
-    for gi, g in enumerate(ctx["schedule"]):
+def schedule_panel(sch):
+    out = []
+    for gi, (title, summ, items) in enumerate(sch):
         rows = []
-        for ii, it in enumerate(g["items"]):
+        for ii, (t, nt, tm, ver) in enumerate(items):
             k = f"d{gi}-{ii}"
-            time = f'<span class="s-time">{esc(it["time"])}</span>' if it["time"] else ""
-            ver = '<span class="verify">Verify</span>' if it["verify"] else ""
-            note = f'<p class="s-note">{esc(it["note"])}</p>' if it["note"] else ""
-            rows.append(
-                f'<li class="sitem"><input type="checkbox" class="sdone" id="chk-{k}" data-f="{k}-done">'
-                f'<div class="sbody"><p class="s-head">{time}<label for="chk-{k}" class="s-title">{esc(it["title"])}</label>{ver}</p>'
-                f'{note}{note_box(k + "-note", "Add a note", "Your note on " + it["title"])}</div></li>'
-            )
-        summ = f'<p class="g-sum">{esc(g["summary"])}</p>' if g["summary"] else ""
-        groups.append(f'<section class="group"><h2>{esc(g["title"])}</h2>{summ}<ul class="slist">{"".join(rows)}</ul></section>')
-    return ('<section class="panel" id="panel-schedule" role="tabpanel" aria-labelledby="tab-schedule" tabindex="0" hidden>'
-            f'<h2 class="sr-only">{esc(_L["schedule"])}</h2>{"".join(groups)}</section>')
+            tms = f'<span class="s-time">{tm}</span>' if tm else ""
+            vf = '<span class="verify">Verify</span>' if ver else ""
+            nn = f'<p class="s-note">{nt}</p>' if nt else ""
+            nb = note(k + "-note", "Add a note", "Your note on " + t)
+            rows.append(f'<li class="sitem"><input type="checkbox" class="sdone" id="chk-{k}" data-f="{k}-done">'
+                        f'<div class="sbody"><p class="s-head">{tms}<label for="chk-{k}" class="s-title">{t}</label>{vf}</p>{nn}{nb}</div></li>')
+        sm = f'<p class="g-sum">{summ}</p>' if summ else ""
+        out.append(f'<section class="group"><h2>{title}</h2>{sm}<ul class="slist">{"".join(rows)}</ul></section>')
+    return f'<h2 class="sr-only">{_L["schedule"]}</h2>' + "".join(out)
 
 
-def render_checklist(ctx) -> str:
-    groups = []
-    for gi, g in enumerate(ctx["checklist"]):
-        rows = "".join(
-            f'<li class="citem"><input type="checkbox" class="cdone" id="chk-k{gi}-{ii}" data-f="k{gi}-{ii}-done">'
-            f'<label for="chk-k{gi}-{ii}">{esc(t)}</label></li>' for ii, t in enumerate(g["items"]))
-        groups.append(f'<section class="group"><h2>{esc(g["title"])}</h2><ul class="clist">{rows}</ul></section>')
-    return ('<section class="panel" id="panel-checklist" role="tabpanel" aria-labelledby="tab-checklist" tabindex="0" hidden>'
-            f'<h2 class="sr-only">{esc(_L["checklist"])}</h2>{"".join(groups)}</section>')
+def checklist_panel(ck):
+    out = []
+    for gi, (t, items) in enumerate(ck):
+        rows = "".join(f'<li class="citem"><input type="checkbox" class="cdone" id="chk-k{gi}-{ii}" data-f="k{gi}-{ii}-done">'
+                       f'<label for="chk-k{gi}-{ii}">{x}</label></li>' for ii, x in enumerate(items))
+        out.append(f'<section class="group"><h2>{t}</h2><ul class="clist">{rows}</ul></section>')
+    return f'<h2 class="sr-only">{_L["checklist"]}</h2>' + "".join(out)
 
 
-def render_budget(ctx) -> str:
-    b = ctx["budget"]
+def budget_panel(b):
+    cur, items = b
     rows = []
-    for i, it in enumerate(b["items"]):
-        est = f'{it["est"]:,.2f}' if it["est"] is not None else "n/a"
-        ver = ' <span class="verify">Verify</span>' if it["verify"] else ""
-        data = f' data-est="{it["est"]}"' if it["est"] is not None else ""
-        rows.append(
-            f'<tr><th scope="row">{esc(it["label"])}{ver}</th><td{data}>{est}</td>'
-            f'<td><input type="number" min="0" step="any" inputmode="decimal" class="num-in" data-f="b{i}-actual" '
-            f'aria-label="Actual cost: {esc(it["label"])}"></td></tr>')
-    return (
-        '<section class="panel" id="panel-budget" role="tabpanel" aria-labelledby="tab-budget" tabindex="0" hidden>'
-        f'<h2>{esc(_L["budget"])}</h2><div class="tablewrap"><table class="budget" id="budget" data-cur="{esc(b["cur"])}">'
-        '<thead><tr><th scope="col">Item</th><th scope="col">Estimate</th><th scope="col">Actual</th></tr></thead>'
-        f'<tbody>{"".join(rows)}</tbody>'
-        '<tfoot><tr><th scope="row">Total</th><td id="b-est"></td><td id="b-act"></td></tr>'
-        '<tr><th scope="row">Difference (entered items)</th><td></td><td id="b-diff"></td></tr></tfoot></table></div>'
-        '<p class="g-sum">Estimates are planning figures. Confirm real prices before paying.</p></section>'
-    )
+    for i, (lab, est, ver) in enumerate(items):
+        vf = ' <span class="verify">Verify</span>' if ver else ""
+        da = f' data-est="{est}"' if est is not None else ""
+        es = f"{est:,.2f}" if est is not None else "n/a"
+        rows.append(f'<tr><th scope="row">{lab}{vf}</th><td{da}>{es}</td><td><input type="number" min="0" step="any" '
+                    f'inputmode="decimal" class="num-in" data-f="b{i}-actual" aria-label="Actual cost: {lab}"></td></tr>')
+    return f'<h2>{_L["budget"]}' + BUDGET_HEAD + cur + BUDGET_TOP + "".join(rows) + BUDGET_FOOT
 
 
-def render_deadlines(ctx) -> str:
+def deadlines_panel(dl):
     rows = []
-    for i, d in enumerate(ctx["deadlines"]):
-        date = f'<span class="j-date" data-date="{esc(d["date"])}">{esc(d["date"]) or "No date"}</span>'
-        note = f'<p class="s-note">{esc(d["note"])}</p>' if d["note"] else ""
-        rows.append(
-            f'<li class="sitem"><input type="checkbox" class="sdone" id="chk-x{i}" data-f="x{i}-done">'
-            f'<div class="sbody"><p class="s-head">{date}<label for="chk-x{i}" class="s-title">{esc(d["title"])}</label></p>{note}</div></li>')
-    return ('<section class="panel" id="panel-deadlines" role="tabpanel" aria-labelledby="tab-deadlines" tabindex="0" hidden>'
-            f'<h2>{esc(_L["deadlines"])}</h2><ul class="slist">{"".join(rows)}</ul></section>')
+    for i, (_, d, t, n) in enumerate(dl):
+        nn = f'<p class="s-note">{n}</p>' if n else ""
+        rows.append(f'<li class="sitem"><input type="checkbox" class="sdone" id="chk-x{i}" data-f="x{i}-done"><div class="sbody">'
+                    f'<p class="s-head"><span class="j-date" data-date="{d}">{d or "No date"}</span>'
+                    f'<label for="chk-x{i}" class="s-title">{t}</label></p>{nn}</div></li>')
+    return f'<h2>{_L["deadlines"]}</h2><ul class="slist">{"".join(rows)}</ul>'
 
 
-_PLAY = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>'
-
-
-def render_videos(videos) -> str:
+def videos_html(vs):
     cards = []
-    for idx, v in enumerate(videos):
-        if v["vid"]:
-            player = (
-                f'<div class="player" data-vid="{esc(v["vid"])}" data-title="{esc(v["title"])}">'
-                f'<button type="button" class="facade" aria-label="Play video: {esc(v["title"])}">'
-                f'<img class="facade-img" src="https://i.ytimg.com/vi/{esc(v["vid"])}/hqdefault.jpg" alt="" loading="lazy">'
-                f'<span class="play">{_PLAY}</span></button></div>'
-            )
-        else:
-            player = ""
-        meta = "".join(f"<span>{esc(x)}</span>" for x in (v["channel"], v["duration"]) if x)
-        summary = f'<p class="vsummary">{esc(v["summary"])}</p>' if v["summary"] else ""
-        take = ""
-        if v["takeaways"]:
-            take = ('<div class="tips"><p class="tips-h">Takeaways</p><ul>'
-                    + "".join(f"<li>{esc(t)}</li>" for t in v["takeaways"]) + "</ul></div>")
-        stamps = ""
-        if v["stamps"]:
-            lis = []
-            for s in v["stamps"]:
-                href = v["url"] + ("&" if "?" in v["url"] else "?") + f"t={s['secs']}s"
-                lis.append(
-                    f'<li><a class="ts" href="{esc(href)}" target="_blank" rel="noopener noreferrer" '
-                    f'data-seek="{s["secs"]}"><span class="ts-time">{esc(s["time"])}</span>'
-                    f'<span>{esc(s["label"])}</span></a></li>'
-                )
-            stamps = f'<ul class="stamps" aria-label="Jump to a moment">{"".join(lis)}</ul>'
-        vnote = note_box(f"v{idx}-note", "Add notes or bookmarks", "Your notes on this video",
-                         "e.g. 5:30, rewatch before practice")
-        cards.append(
-            f'<article class="video">{player}<div class="video-body">'
-            f'<h3><a href="{esc(v["url"])}" target="_blank" rel="noopener noreferrer">{esc(v["title"])}</a></h3>'
-            f'<p class="meta">{meta}</p>{summary}{take}{stamps}{vnote}</div></article>'
-        )
-    return f'<section aria-labelledby="v-h"><h2 id="v-h">Videos</h2><div class="videos">{"".join(cards)}</div></section>' if cards else ""
+    for i, (u, vid, title, ch, dur, summ, tk, sts) in enumerate(vs):
+        pl = ""
+        if vid:
+            pl = (f'<div class="player" data-vid="{vid}" data-title="{title}"><button type="button" class="facade" aria-label="Play video: {title}">'
+                  f'<img class="facade-img" src="https://i.ytimg.com/vi/{vid}/hqdefault.jpg" alt="" loading="lazy">'
+                  f'<span class="play">{PLAY}</span></button></div>')
+        meta = "".join("<span>%s</span>" % x for x in (ch, dur) if x)
+        sm = f'<p class="vsummary">{summ}</p>' if summ else ""
+        tp = ""
+        if tk:
+            tp = ('<div class="tips"><p class="tips-h">Takeaways</p><ul>'
+                  + "".join("<li>%s</li>" % x for x in tk) + "</ul></div>")
+        ts = ""
+        if sts:
+            sep = "&amp;" if "?" in u else "?"
+            ls = "".join(f'<li><a class="ts" href="{u}{sep}t={s}s" target="_blank" rel="noopener noreferrer" data-seek="{s}">'
+                         f'<span class="ts-time">{t}</span><span>{lab}</span></a></li>' for t, s, lab in sts)
+            ts = f'<ul class="stamps" aria-label="Jump to a moment">{ls}</ul>'
+        nb = note(f"v{i}-note", "Add notes or bookmarks", "Your notes on this video", "e.g. 5:30, rewatch before practice")
+        cards.append(f'<article class="video">{pl}<div class="video-body"><h3><a href="{u}" target="_blank" rel="noopener noreferrer">{title}</a></h3>'
+                     f'<p class="meta">{meta}</p>{sm}{tp}{ts}{nb}</div></article>')
+    if not cards:
+        return ""
+    return f'<section aria-labelledby="v-h"><h2 id="v-h">Videos</h2><div class="videos">{"".join(cards)}</div></section>'
 
 
-def render_resources(ctx) -> str:
-    web = ""
-    if ctx["web"]:
-        lis = "".join(
-            f'<li><a href="{esc(w["url"])}" target="_blank" rel="noopener noreferrer">'
-            f'<span class="wl-title">{esc(w["title"])}</span><span class="wl-host">{esc(w["host"])}</span></a></li>'
-            for w in ctx["web"]
-        )
-        web = f'<section aria-labelledby="w-h"><h2 id="w-h">Further reading</h2><ul class="weblinks">{lis}</ul></section>'
-    return (
-        '<section class="panel" id="panel-resources" role="tabpanel" aria-labelledby="tab-resources" tabindex="0" hidden>'
-        f'{render_videos(ctx["videos"])}{web}</section>'
-    )
+def resources_panel(vs, ws):
+    wl = ""
+    if ws:
+        ls = "".join(f'<li><a href="{u}" target="_blank" rel="noopener noreferrer"><span class="wl-title">{t}</span>'
+                     f'<span class="wl-host">{h}</span></a></li>' for u, t, h in ws)
+        wl = f'<section aria-labelledby="w-h"><h2 id="w-h">Further reading</h2><ul class="weblinks">{ls}</ul></section>'
+    return videos_html(vs) + wl
 
 
-def render_notes() -> str:
-    """Static shell. The timeline and takeaways are rebuilt by JS from live DOM state."""
-    return (
-        '<section class="panel" id="panel-notes" role="tabpanel" aria-labelledby="tab-notes" tabindex="0" hidden>'
-        '<h2>Notes and journal</h2><p class="j-summary" id="j-summary"></p>'
-        '<section aria-labelledby="j1"><h3 class="j-h" id="j1">Timeline</h3><div id="j-timeline"></div></section>'
-        '<section aria-labelledby="j2"><h3 class="j-h" id="j2">Your notes</h3><div id="j-takeaways"></div></section>'
-        '<section aria-labelledby="j3"><h3 class="j-h" id="j3">Journal</h3>'
-        '<label class="sr-only" for="journal">Freeform journal</label>'
-        f'<textarea class="journal" id="journal" data-f="journal" maxlength="{MAX_NOTE * 4}" rows="10" '
-        'placeholder="What worked, what to change next."></textarea></section></section>'
-    )
-
-
-# -- CSS / JS (plain strings: no format braces to escape) ---------------------
+# -- CSS / JS (plain strings) ---------------------------------------------------
 
 CSS = r"""
 :root{
@@ -712,6 +526,7 @@ CSS = r"""
   --ink:hsl(var(--h),35%,11%); --muted:hsl(var(--h),14%,36%);
   --rule:hsl(var(--h),18%,84%); --accent:hsl(var(--h),72%,30%);
   --accent-bg:hsl(var(--h),55%,92%); --focus:hsl(var(--h),85%,40%);
+  --field-bd:hsl(var(--h),12%,50%);
   --serif:'Fraunces',Georgia,'Times New Roman',serif;
   --sans:'Instrument Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
   --measure:68ch;
@@ -721,6 +536,7 @@ CSS = r"""
   --ink:hsl(var(--h),25%,93%); --muted:hsl(var(--h),12%,70%);
   --rule:hsl(var(--h),14%,23%); --accent:hsl(var(--h),78%,72%);
   --accent-bg:hsl(var(--h),32%,18%); --focus:hsl(var(--h),90%,70%);
+  --field-bd:hsl(var(--h),10%,52%);
 }}
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -731,7 +547,6 @@ a{color:inherit}
 :focus-visible{outline:3px solid var(--focus);outline-offset:2px;border-radius:4px}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
-/* navigation */
 .nav{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--rule)}
 .nav-in{max-width:860px;margin:0 auto;padding:0 20px;display:flex;align-items:center;gap:16px}
 .tabs{display:flex;overflow-x:auto;scrollbar-width:none;flex:1}
@@ -744,7 +559,6 @@ a{color:inherit}
 .track{width:72px;height:4px;border-radius:4px;background:var(--rule);overflow:hidden}
 .bar{height:100%;width:0;background:var(--accent);transition:width .3s ease}
 
-/* layout */
 main{max-width:860px;margin:0 auto;padding:40px 20px 96px}
 .panel[hidden]{display:none}
 .panel:focus:not(:focus-visible){outline:none}
@@ -753,9 +567,10 @@ h3{font:700 1.125rem/1.35 var(--serif)}
 .prose{max-width:var(--measure)}
 .prose p+p{margin-top:.8em}
 
-/* hero */
 .hero{padding:24px 0 40px;border-bottom:1px solid var(--rule);margin-bottom:32px}
-.level{display:inline-block;font-size:14px;font-weight:600;color:var(--accent);border-left:3px solid var(--accent);padding-left:10px;margin-bottom:20px}
+.hero-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin-bottom:20px}
+.level{display:inline-block;font-size:14px;font-weight:600;color:var(--accent);border-left:3px solid var(--accent);padding-left:10px}
+.ver{font-size:13px;color:var(--muted)}
 h1{font:700 clamp(2.1rem,6vw,3.6rem)/1.1 var(--serif);letter-spacing:-.015em;max-width:18ch}
 .goal{font-family:var(--serif);font-size:1.2rem;line-height:1.6;color:var(--muted);max-width:52ch;margin-top:20px}
 .hero-quote{margin-top:32px}
@@ -763,8 +578,10 @@ h1{font:700 clamp(2.1rem,6vw,3.6rem)/1.1 var(--serif);letter-spacing:-.015em;max
 .quote blockquote p{font:italic 400 1.125rem/1.6 var(--serif)}
 .quote figcaption{margin-top:8px;font-size:14px;color:var(--muted)}
 .quote+.quote{margin-top:24px}
+.target{display:flex;flex-wrap:wrap;gap:14px 20px;margin-top:28px;max-width:600px}
+.field{display:flex;flex-direction:column;gap:4px;font-size:14px;color:var(--muted);flex:1 1 220px}
+.field:last-child{flex:0 1 200px}
 
-/* overview extras */
 .jumps{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:40px}
 .jump{font:500 15px/1 var(--sans);color:var(--ink);background:var(--surface);border:1px solid var(--rule);
   border-radius:8px;padding:14px 16px;cursor:pointer;min-height:44px}
@@ -772,8 +589,12 @@ h1{font:700 clamp(2.1rem,6vw,3.6rem)/1.1 var(--serif);letter-spacing:-.015em;max
 .jump strong{color:var(--accent);font-weight:700;margin-left:4px}
 .preview li{padding:14px 0;border-top:1px solid var(--rule);max-width:var(--measure)}
 .preview li:first-child{border-top:0}
+.notice{margin:0 0 32px;padding:14px 18px;border:1px solid var(--accent);border-left-width:4px;
+  background:var(--accent-bg);border-radius:8px;max-width:var(--measure);font-size:15px}
+.assume{margin-bottom:40px}
+.assume li{position:relative;padding:4px 0 4px 16px;font-size:15px}
+.assume li::before{content:"";position:absolute;left:0;top:.95em;width:6px;height:2px;background:var(--accent)}
 
-/* lessons */
 .lesson{padding:28px 0;border-top:1px solid var(--rule)}
 .lesson:first-of-type{border-top:0;padding-top:0}
 .source{font-size:14px;color:var(--muted);margin:4px 0 10px}
@@ -785,11 +606,10 @@ h1{font:700 clamp(2.1rem,6vw,3.6rem)/1.1 var(--serif);letter-spacing:-.015em;max
 .tips li::before{content:"";position:absolute;left:0;top:.7em;width:6px;height:2px;background:var(--accent)}
 .quotes{margin-top:48px;padding-top:32px;border-top:1px solid var(--rule)}
 
-/* action plan */
 .action-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:8px}
-.ghost{font:500 14px/1 var(--sans);color:var(--muted);background:none;border:0;padding:8px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.ghost{font:500 14px/1 var(--sans);color:var(--muted);background:none;border:0;padding:8px;cursor:pointer;
+  text-decoration:underline;text-underline-offset:3px;min-height:44px;display:inline-flex;align-items:center}
 .ghost:hover{color:var(--ink)}
-.steps{counter-reset:none}
 .step{display:flex;gap:16px;padding:22px 0;border-top:1px solid var(--rule)}
 .step:first-child{border-top:0}
 .chk{width:22px;height:22px;flex:none;margin-top:2px;accent-color:var(--accent);cursor:pointer}
@@ -799,13 +619,50 @@ h1{font:700 clamp(2.1rem,6vw,3.6rem)/1.1 var(--serif);letter-spacing:-.015em;max
 .step-title{display:block;font:700 1.125rem/1.4 var(--serif);cursor:pointer;margin-bottom:6px}
 .step.done .step-title{text-decoration:line-through;text-decoration-thickness:1px;color:var(--muted)}
 .drill{margin-top:12px;padding:12px 16px;border-left:3px solid var(--accent);background:var(--accent-bg);border-radius:0 8px 8px 0;max-width:var(--measure);font-size:15px}
+.step-plan{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;margin-top:14px}
+.due-field{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
+.rm{margin-left:auto}
+.rm.armed{color:var(--accent);font-weight:600}
+.custom-title{display:block;width:100%;font:700 1.125rem/1.4 var(--serif);margin-bottom:6px}
+.add-step{font:600 15px/1 var(--sans);color:var(--accent);background:none;border:1px dashed var(--accent);
+  border-radius:8px;padding:14px 18px;margin-top:12px;cursor:pointer;min-height:44px}
+.add-step:hover{background:var(--accent-bg)}
 
-/* resources */
+.date,.text-in,.custom-title,.note-input,.journal,.num-in{font:inherit;color:var(--ink);background:var(--surface);
+  border:1px solid var(--field-bd);border-radius:8px;padding:8px 10px;max-width:100%}
+.date,.text-in{font-size:15px}
+.text-in{width:100%}
+.note{margin-top:14px;max-width:var(--measure)}
+.note summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--accent);padding:4px 0;width:fit-content;
+  min-height:44px;display:flex;align-items:center}
+.note-input{display:block;width:100%;margin-top:8px;min-height:84px;resize:vertical;font-size:15px;line-height:1.55}
+
+.g-sum{color:var(--muted);font-size:15px;margin:-6px 0 12px;max-width:var(--measure)}
+.sitem,.citem{display:flex;gap:14px;padding:14px 0;border-top:1px solid var(--rule)}
+.slist>.sitem:first-child,.clist>.citem:first-child{border-top:0}
+.sdone,.cdone{width:22px;height:22px;flex:none;margin-top:2px;accent-color:var(--accent);cursor:pointer}
+.sbody{min-width:0}
+.s-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px}
+.s-time{font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
+.s-title{font-weight:600;cursor:pointer}
+.s-note{font-size:15px;color:var(--muted);margin-top:4px;max-width:var(--measure)}
+.sdone:checked+.sbody .s-title{text-decoration:line-through;color:var(--muted)}
+.cdone:checked+label{text-decoration:line-through;color:var(--muted)}
+.citem label{cursor:pointer}
+.verify{font-size:12px;font-weight:700;color:var(--accent);border:1px solid var(--accent);border-radius:99px;padding:1px 8px}
+.tablewrap{overflow-x:auto}
+.budget{border-collapse:collapse;width:100%;max-width:var(--measure);font-size:15px}
+.budget th,.budget td{text-align:left;padding:10px 8px;border-top:1px solid var(--rule)}
+.budget thead th{font-size:14px;color:var(--muted);border-top:0}
+.budget tfoot{font-weight:700}
+.num-in{width:8em}
+
 .panel>section+section{margin-top:48px}
 .videos{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px 24px}
 .player{aspect-ratio:16/9;background:var(--rule);border-radius:10px;overflow:hidden}
 .player iframe,.facade{width:100%;height:100%;border:0;display:block}
 .facade{position:relative;padding:0;background:var(--rule);cursor:pointer}
+.facade[hidden]{display:none}
 .facade-img{width:100%;height:100%;object-fit:cover;display:block}
 .play{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.28)}
 .play svg{width:52px;height:52px;fill:#fff;filter:drop-shadow(0 2px 8px rgba(0,0,0,.5))}
@@ -825,62 +682,9 @@ h1{font:700 clamp(2.1rem,6vw,3.6rem)/1.1 var(--serif);letter-spacing:-.015em;max
 .wl-host{font-size:14px;color:var(--muted);flex:none}
 .empty{color:var(--muted);padding:48px 0}
 
-/* single load sequence: hero only */
-@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-.hero>*{animation:rise .55s cubic-bezier(.2,.7,.2,1) both}
-.hero>:nth-child(2){animation-delay:.08s}.hero>:nth-child(3){animation-delay:.16s}.hero>:nth-child(4){animation-delay:.28s}
-@media (prefers-reduced-motion:reduce){.hero>*{animation:none}.bar{transition:none}}
-
-@media (max-width:600px){
-  main{padding-top:28px}
-  .nav-in{padding:0 8px 0 12px;gap:8px}
-  .track{display:none}
-  .videos{grid-template-columns:1fr}
-}
-"""
-
-CSS_EXTRA = r"""
-:root{--field-bd:hsl(var(--h),12%,50%)}
-@media (prefers-color-scheme:dark){:root{--field-bd:hsl(var(--h),10%,52%)}}
-
-/* version line, finish line */
-.hero-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin-bottom:20px}
-.hero-meta .level{margin-bottom:0}
-.ver{font-size:13px;color:var(--muted)}
-.target{display:flex;flex-wrap:wrap;gap:14px 20px;margin-top:28px;max-width:600px}
-.field{display:flex;flex-direction:column;gap:4px;font-size:14px;color:var(--muted);flex:1 1 220px}
-.field:last-child{flex:0 1 200px}
-
-/* shared controls */
-.date,.text-in,.custom-title,.note-input,.journal,.num-in{font:inherit;color:var(--ink);background:var(--surface);
-  border:1px solid var(--field-bd);border-radius:8px;padding:8px 10px;max-width:100%}
-.date{font-size:15px}
-.text-in{font-size:15px;width:100%}
-
-/* in-place notes */
-.note{margin-top:14px;max-width:var(--measure)}
-.note summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--accent);padding:4px 0;width:fit-content;
-  min-height:44px;display:flex;align-items:center}
-.note-input{display:block;width:100%;margin-top:8px;min-height:84px;resize:vertical;font-size:15px;line-height:1.55}
-
-/* action plan additions */
-.ghost{min-height:44px;display:inline-flex;align-items:center}
-.step-plan{display:flex;flex-wrap:wrap;align-items:center;gap:8px 20px;margin-top:14px}
-.due-field{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
-.rm{margin-left:auto}
-.rm.armed{color:var(--accent);font-weight:600}
-.custom-title{display:block;width:100%;font:700 1.125rem/1.4 var(--serif);margin-bottom:6px}
-.add-step{font:600 15px/1 var(--sans);color:var(--accent);background:none;border:1px dashed var(--accent);
-  border-radius:8px;padding:14px 18px;margin-top:12px;cursor:pointer;min-height:44px}
-.add-step:hover{background:var(--accent-bg)}
-.facade[hidden]{display:none}
-
-/* tab badge */
 .badge{display:inline-block;min-width:1.5em;margin-left:6px;padding:2px 6px;border-radius:99px;
   background:var(--accent-bg);color:var(--accent);font-size:12px;font-weight:700;line-height:1.3;text-align:center}
 .badge[hidden]{display:none}
-
-/* notes and journal */
 .j-summary{color:var(--muted);margin:-8px 0 36px}
 .j-h{font:700 1.125rem/1.35 var(--serif);margin-bottom:12px}
 .timeline>li,.takeaways>li{padding:16px 0;border-top:1px solid var(--rule)}
@@ -893,37 +697,6 @@ CSS_EXTRA = r"""
 .j-note .note-input{margin-top:0}
 .journal{width:100%;max-width:var(--measure);min-height:220px;resize:vertical;font:400 1rem/1.7 var(--serif)}
 
-/* notice and assumptions */
-.notice{margin:0 0 32px;padding:14px 18px;border:1px solid var(--accent);border-left-width:4px;
-  background:var(--accent-bg);border-radius:8px;max-width:var(--measure);font-size:15px}
-.assume{margin-bottom:40px}
-.assume li{position:relative;padding:4px 0 4px 16px;font-size:15px}
-.assume li::before{content:"";position:absolute;left:0;top:.95em;width:6px;height:2px;background:var(--accent)}
-
-/* schedule, checklist, deadlines */
-.g-sum{color:var(--muted);font-size:15px;margin:-6px 0 12px;max-width:var(--measure)}
-.sitem,.citem{display:flex;gap:14px;padding:14px 0;border-top:1px solid var(--rule)}
-.slist>.sitem:first-child,.clist>.citem:first-child{border-top:0}
-.sdone,.cdone{width:22px;height:22px;flex:none;margin-top:2px;accent-color:var(--accent);cursor:pointer}
-.sbody{min-width:0}
-.s-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px}
-.s-time{font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
-.s-title{font-weight:600;cursor:pointer}
-.s-note{font-size:15px;color:var(--muted);margin-top:4px;max-width:var(--measure)}
-.sdone:checked+.sbody .s-title{text-decoration:line-through;color:var(--muted)}
-.cdone:checked+label{text-decoration:line-through;color:var(--muted)}
-.citem label{cursor:pointer}
-.verify{font-size:12px;font-weight:700;color:var(--accent);border:1px solid var(--accent);border-radius:99px;padding:1px 8px}
-
-/* budget */
-.tablewrap{overflow-x:auto}
-.budget{border-collapse:collapse;width:100%;max-width:var(--measure);font-size:15px}
-.budget th,.budget td{text-align:left;padding:10px 8px;border-top:1px solid var(--rule)}
-.budget thead th{font-size:14px;color:var(--muted);border-top:0}
-.budget tfoot{font-weight:700}
-.num-in{width:8em}
-
-/* save bar */
 .savebar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:20;display:flex;align-items:center;
   gap:16px;max-width:calc(100% - 24px);padding:10px 12px 10px 18px;background:var(--ink);color:var(--bg);
   border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:14px;animation:barIn .22s ease both}
@@ -932,13 +705,20 @@ CSS_EXTRA = r"""
 .savebtn{font:600 14px/1 var(--sans);color:var(--ink);background:var(--bg);border:0;border-radius:8px;padding:12px 14px;cursor:pointer;min-height:44px}
 .savebtn:disabled{opacity:.6;cursor:default}
 @keyframes barIn{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}
-@media (prefers-reduced-motion:reduce){.savebar{animation:none}}
+
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.hero>*{animation:rise .55s cubic-bezier(.2,.7,.2,1) both}
+.hero>:nth-child(2){animation-delay:.08s}.hero>:nth-child(3){animation-delay:.16s}.hero>:nth-child(4){animation-delay:.28s}
+@media (prefers-reduced-motion:reduce){.hero>*{animation:none}.bar{transition:none}.savebar{animation:none}}
+
 @media (max-width:600px){
+  main{padding-top:28px}
+  .nav-in{padding:0 8px 0 12px;gap:8px}
+  .track{display:none}
+  .videos{grid-template-columns:1fr}
   .savebar{left:12px;right:12px;transform:none;flex-wrap:wrap;justify-content:space-between;animation:none}
   .step-plan{align-items:flex-start}
 }
-
-/* print: show every panel, drop chrome */
 @media print{
   .nav,.savebar{display:none}
   .panel[hidden]{display:block}
@@ -948,7 +728,6 @@ CSS_EXTRA = r"""
   .hero>*{animation:none}
 }
 """
-CSS = CSS + CSS_EXTRA
 
 JS = r"""
 (function () {
@@ -1333,7 +1112,8 @@ JS = r"""
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; img-src https://i.ytimg.com data:; "
        "frame-src https://www.youtube-nocookie.com; base-uri 'none'; form-action 'none'")
-
+CSP_NOFONT = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+              "img-src https://i.ytimg.com data:; frame-src https://www.youtube-nocookie.com; base-uri 'none'; form-action 'none'")
 FONT_LINKS = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">'
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
@@ -1342,236 +1122,105 @@ FONT_LINKS = (
 )
 
 
-# -- Assembly -----------------------------------------------------------------
+# -- assembly -------------------------------------------------------------------
 
-def wrap(doc: str) -> str:
-    return f"<!-- synaptix-html-app -->{doc}<!-- /synaptix-html-app -->"
-
-
-def error_page(message: str) -> str:
-    return wrap(
-        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Guide unavailable</title>'
-        '<style>body{font:16px/1.6 system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px}</style></head>'
-        f'<body><h1>The guide could not be built</h1><p>{esc(message)}</p></body></html>'
-    )
+def wrap(doc):
+    return "<!-- synaptix-html-app -->" + doc + "<!-- /synaptix-html-app -->"
 
 
-def _js_str(value: str) -> str:
-    """JS string literal that cannot close a <script> block."""
-    return json.dumps(value).replace("<", "\\u003c")
+def error_page(msg):
+    return wrap('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1"><title>Guide unavailable</title>'
+                '<style>body{font:16px/1.6 system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px}</style></head>'
+                '<body><h1>The guide could not be built</h1><p>' + esc(msg) + '</p></body></html>')
 
 
-def build(inputs: dict, warnings: list) -> str:
-    def warn(msg):
-        if len(warnings) < 25:
-            warnings.append(msg)
-
-    topic = txt(inputs.get("topic"), MAX_TITLE) or "Your topic"
-    if topic == "Your topic" and not inputs.get("topic"):
+def build(inp):
+    t_raw = txt(inp.get("topic"), MAX_TITLE)
+    if not t_raw:
         warn("topic was missing; a placeholder title was used")
-    depth_raw = txt(inputs.get("depth"), 30).lower()
-    level = DEPTHS.get(depth_raw, "")
-    if depth_raw and not level:
-        warn(f"unknown depth '{depth_raw}'; expected beginner, intermediate or advanced")
+        t_raw = "Your topic"
+    depth = txt(inp.get("depth"), 30).lower()
+    level = DEPTHS.get(depth, "")
+    if depth and not level:
+        warn("unknown depth '%s'; expected beginner, intermediate or advanced" % depth)
 
-    # Labels first: normalizers and renderers read them via _L.
-    bp = norm_blueprint(inputs, warn)
-    _L.clear()
-    _L.update(bp["labels"])
-
-    ctx = {
-        "topic": topic,
-        "goal": txt(inputs.get("goal"), 500),
-        "level": level,
-        "bp": bp,
-        "lessons": norm_lessons(inputs.get("key_lessons"), warn),
-        "quotes": norm_quotes(inputs.get("expert_quotes"), warn),
-        "steps": norm_steps(inputs.get("action_steps"), warn),
-        "videos": norm_videos(inputs.get("videos"), warn),
-        "web": norm_web(inputs.get("web_sources"), warn),
-        "schedule": norm_schedule(inputs.get("schedule"), warn),
-        "checklist": norm_checklist(inputs.get("checklist"), warn),
-        "budget": norm_budget(inputs.get("budget"), warn),
-        "deadlines": norm_deadlines(inputs.get("deadlines"), warn),
-    }
-
-    key = hashlib.sha256(("\x1f".join([topic] + [s["title"] for s in ctx["steps"]])).encode("utf-8")).hexdigest()[:16]
-
-    # Action plan and notes always exist: users can add milestones and journal
-    # even when the research returned no steps.
-    tabs = [("overview", esc(_L["overview"]), render_overview(ctx))]
-    if ctx["lessons"] or ctx["quotes"]:
-        tabs.append(("lessons", esc(_L["lessons"]), render_lessons(ctx)))
-    if ctx["schedule"]:
-        tabs.append(("schedule", esc(_L["schedule"]), render_schedule(ctx)))
-    tabs.append(("action", esc(_L["action"]), render_action(ctx)))
-    if ctx["checklist"]:
-        tabs.append(("checklist", esc(_L["checklist"]), render_checklist(ctx)))
-    if ctx["budget"]:
-        tabs.append(("budget", esc(_L["budget"]), render_budget(ctx)))
-    if ctx["deadlines"]:
-        tabs.append(("deadlines", esc(_L["deadlines"]), render_deadlines(ctx)))
-    tabs.append(("notes", "Notes &amp; journal", render_notes()))
-    if ctx["videos"] or ctx["web"]:
-        tabs.append(("resources", "Resources", render_resources(ctx)))
-    if not (ctx["lessons"] or ctx["quotes"] or ctx["steps"] or ctx["videos"] or ctx["web"]
-            or ctx["schedule"] or ctx["checklist"] or ctx["budget"] or ctx["deadlines"]):
+    notice, assume, lang = blueprint(inp)   # must run first: it sets the labels
+    les = lessons(inp.get("key_lessons"))
+    qs = quotes(inp.get("expert_quotes"))
+    st = steps(inp.get("action_steps"))
+    vs = videos(inp.get("videos"))
+    ws = web(inp.get("web_sources"))
+    sch = schedule(inp.get("schedule"))
+    ck = checklist(inp.get("checklist"))
+    bg = budget(inp.get("budget"))
+    dl = deadlines(inp.get("deadlines"))
+    goal_raw = txt(inp.get("goal"), 500)
+    if not (les or qs or st or vs or ws or sch or ck or bg or dl):
         warn("no lessons, steps, schedule or resources were provided; the guide starts empty")
 
+    ns = sum(len(g[2]) for g in sch)
+    nc = sum(len(g[1]) for g in ck)
+    nt = len(st) + ns + nc + len(dl)
+    jumps = [("lessons", _L["lessons"], len(les)), ("schedule", _L["schedule"], ns),
+             ("action", _L["action"], len(st)), ("checklist", _L["checklist"], nc),
+             ("budget", _L["budget"], len(bg[1]) if bg else 0), ("deadlines", _L["deadlines"], len(dl)),
+             ("resources", "Resources", len(vs) + len(ws))]
+    topic = esc(t_raw)
+    parts = [
+        ("overview", _L["overview"], True,
+         overview(topic, esc(goal_raw or "Turn this topic into a clear, doable plan."), level, notice, assume, jumps, les, qs)),
+        ("lessons", _L["lessons"], les or qs, lessons_panel(les, qs)),
+        ("schedule", _L["schedule"], sch, schedule_panel(sch)),
+        ("action", _L["action"], True, action_panel(st)),
+        ("checklist", _L["checklist"], ck, checklist_panel(ck)),
+        ("budget", _L["budget"], bg, budget_panel(bg) if bg else ""),
+        ("deadlines", _L["deadlines"], dl, deadlines_panel(dl)),
+        ("notes", "Notes &amp; journal", True, NOTES),
+        ("resources", "Resources", vs or ws, resources_panel(vs, ws)),
+    ]
+    tabs = [p for p in parts if p[2]]
+
     tab_html = "".join(
-        f'<button type="button" class="tab" role="tab" id="tab-{n}" data-panel="{n}" '
-        f'aria-controls="panel-{n}" aria-selected="{"true" if i == 0 else "false"}" '
-        f'tabindex="{0 if i == 0 else -1}">{label}'
-        + ('<span class="badge" id="note-count" hidden>0</span>' if n == "notes" else "")
-        + "</button>"
-        for i, (n, label, _) in enumerate(tabs)
-    )
-    n_track = (len(ctx["steps"]) + sum(len(g["items"]) for g in ctx["schedule"])
-               + sum(len(g["items"]) for g in ctx["checklist"]) + len(ctx["deadlines"]))
-    progress = (
-        '<div class="progress"><div class="track" id="meter" role="progressbar" aria-label="Plan progress" '
-        'aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="bar" id="bar"></div></div>'
-        f'<span id="prog-text">{f"0 of {n_track} done" if n_track else "Nothing to track yet"}</span></div>'
-    )
-    savebar = (
-        '<div class="savebar" id="savebar" role="region" aria-label="Save your changes" hidden>'
-        '<span id="bar-msg"></span>'
-        '<button type="button" class="savebtn" id="save">Save augmented guide</button></div>'
-        '<p class="sr-only" id="save-live" aria-live="polite"></p>'
-    )
+        f'<button type="button" class="tab" role="tab" id="tab-{n}" data-panel="{n}" aria-controls="panel-{n}" '
+        f'aria-selected="{"false" if i else "true"}" tabindex="{-1 if i else 0}">{lab}{BADGE if n == "notes" else ""}</button>'
+        for i, (n, lab, _, _) in enumerate(tabs))
+    pt = "0 of %d done" % nt if nt else "Nothing to track yet"
+    progress = ('<div class="progress"><div class="track" id="meter" role="progressbar" aria-label="Plan progress" '
+                'aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="bar" id="bar"></div></div>'
+                f'<span id="prog-text">{pt}</span></div>')
+    main = "".join(panel(n, body) for n, _, _, body in tabs)
 
-    script = JS.replace("__TARGET_ORIGIN__", _js_str(SAVE_TARGET_ORIGIN)).replace("__MSG_TYPE__", _js_str(SAVE_MESSAGE_TYPE))
+    key = hashlib.sha256("\x1f".join([t_raw] + [s[0] for s in st]).encode("utf-8")).hexdigest()[:16]
+    script = JS.replace("__TARGET_ORIGIN__", json.dumps(SAVE_TARGET_ORIGIN)).replace("__MSG_TYPE__", json.dumps(SAVE_MESSAGE_TYPE))
     fonts = FONT_LINKS if WEB_FONTS else ""
-    csp = CSP if WEB_FONTS else CSP.replace(" https://fonts.googleapis.com", "").replace("font-src https://fonts.gstatic.com; ", "")
-    desc = esc(clip(ctx["goal"] or f"Interactive guide for {topic}", 160))
+    csp = CSP if WEB_FONTS else CSP_NOFONT
+    desc = esc(clip(goal_raw or "Interactive guide for " + t_raw, 160))
 
-    doc = (
-        f'<!DOCTYPE html><html lang="{esc(bp["lang"])}" style="--h:{topic_hue(topic)}"><head><meta charset="UTF-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<meta http-equiv="Content-Security-Policy" content="{esc(csp)}">'
-        f'<meta name="description" content="{desc}"><meta name="color-scheme" content="light dark">'
-        f'<title>{esc(topic)}: guide</title>{fonts}<style>{CSS}</style></head>'
-        f'<body><div id="app" data-key="{key}" data-version="1" data-step="{esc(_L["step"])}">'
-        f'<nav class="nav" aria-label="Guide sections"><div class="nav-in"><div class="tabs" role="tablist">{tab_html}</div>{progress}</div></nav>'
-        f'<main>{"".join(p for _, _, p in tabs)}</main>{savebar}</div>'
-        f'<script>{script}</script></body></html>'
-    )
+    doc = (f'<!DOCTYPE html><html lang="{lang}" style="--h:{hue(t_raw)}"><head><meta charset="UTF-8">'
+           '<meta name="viewport" content="width=device-width,initial-scale=1">'
+           f'<meta http-equiv="Content-Security-Policy" content="{esc(csp)}">'
+           f'<meta name="description" content="{desc}"><meta name="color-scheme" content="light dark">'
+           f'<title>{topic}: guide</title>{fonts}<style>{CSS}</style></head>'
+           f'<body><div id="app" data-key="{key}" data-version="1" data-step="{_L["step"]}">'
+           f'<nav class="nav" aria-label="Guide sections"><div class="nav-in"><div class="tabs" role="tablist">{tab_html}</div>{progress}</div></nav>'
+           f'<main>{main}</main>{SAVEBAR}</div><script>{script}</script></body></html>')
     return wrap(doc)
 
 
-def run(raw_inputs) -> dict:
-    warnings: list = []
+def run(raw):
+    W.clear()
     try:
-        data = raw_inputs
-        if isinstance(data, str):
-            data = json.loads(data)
+        data = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(data, dict):
             raise TypeError("inputs must be an object")
-        html_app = build(data, warnings)
+        html_app = build(data)
         summary = "Guide app built successfully"
-        if warnings:
-            summary += f" with {len(warnings)} input warning(s)"
-        return {"html_app": html_app, "summary": summary, "warnings": warnings}
+        if W:
+            summary += " with %d input warning(s)" % len(W)
+        return {"html_app": html_app, "summary": summary, "warnings": list(W)}
     except Exception as exc:  # last-resort guard: always return a renderable page
-        return {
-            "html_app": error_page(f"{type(exc).__name__}: {exc}"),
-            "summary": f"Guide build failed: {type(exc).__name__}",
-            "warnings": warnings + [str(exc)],
-        }
+        return {"html_app": error_page(str(exc)), "summary": "Guide build failed", "warnings": W + [str(exc)]}
 
 
-# -- Self-test (python build_app.py) ------------------------------------------
-
-def _check_keys(h: str) -> None:
-    live_part = h.split('<template id="tpl-step">')[0] + h.split("</template>")[1]
-    keys = re.findall(r'data-f="([^"]+)"', live_part)
-    assert len(keys) == len(set(keys)), "data-f keys must be unique outside the template"
-    ids = re.findall(r'\sid="([^"]+)"', live_part)
-    assert len(ids) == len(set(ids)), "element ids must be unique"
-
-
-def _selftest() -> None:
-    hostile = {
-        "topic": '<img src=x onerror=alert(1)> Guitar',
-        "depth": "wizard",
-        "key_lessons": ["plain string lesson", {"title": "<b>x</b>", "desc": "d", "tips": "- one\n- two"}, 42, None],
-        "expert_quotes": ["just text", {"text": "q", "author": "A"}, {"author": "no text"},
-                          {"text": " ".join(["w"] * 40), "author": "too long"}],
-        "action_steps": ["do a thing", {"title": "t", "duration": "5 min"}],
-        "videos": [
-            {"url": "javascript:alert(1)", "title": "bad"},
-            {"url": "https://youtu.be/dQw4w9WgXcQ", "title": "ok", "key_timestamps": ["1:05 intro", {"time": "x", "label": "bad"}]},
-            "not a dict",
-        ],
-        "web_sources": [{"results": [{"title": "T", "url": "https://example.com/a"}, {"url": "data:text/html,x"}]}],
-    }
-    out = run(hostile)
-    h = out["html_app"]
-    assert h.startswith("<!-- synaptix-html-app -->") and h.endswith("<!-- /synaptix-html-app -->")
-    assert "<img src=x" not in h and "javascript:alert" not in h and "data:text/html" not in h
-    assert 'data-seek="65"' in h and 'data-vid="dQw4w9WgXcQ"' in h
-    assert out["warnings"], "expected warnings for bad input"
-    assert any("longer than" in w for w in out["warnings"]), "long quote should warn"
-    assert "too long" not in h
-    assert "failed" not in out["summary"]
-    for bad in (None, [], "not json", {}):
-        assert run(bad)["html_app"], "must always return a page"
-
-    # v5 surface still intact
-    for needle in ('data-f="s0-done"', 'data-f="s1-note"', 'data-f="l0-note"', 'data-f="v0-note"',
-                   'data-f="target"', 'data-f="journal"', 'id="tpl-step"', 'id="panel-notes"', 'id="savebar"'):
-        assert needle in h, f"missing {needle}"
-    _check_keys(h)
-    live_part = h.split('<template id="tpl-step">')[0] + h.split("</template>")[1]
-    markup = re.sub(r"<script>.*?</script>", "", live_part, flags=re.S)  # the JS legitimately contains /__K__/g
-    assert "__K__" in h.split("<template")[1].split("</template>")[0] and "__K__" not in markup
-    assert "__TARGET_ORIGIN__" not in h and "__MSG_TYPE__" not in h and SAVE_MESSAGE_TYPE in h
-    assert h.count("<script>") == 1
-    assert 'id="panel-schedule"' not in h and 'id="panel-budget"' not in h, "new tabs only appear with data"
-    assert "Practice drill" not in h or "Try this" in h  # default labels still apply for plain guides
-
-    # v6: trip payload exercises every new section
-    trip = run({
-        "topic": "Japan 10 days", "archetype": "plan_trip", "lang": 'en"><script>',
-        "notice": "Entry rules change; confirm on the official site.",
-        "assumptions": ["2 adults", "mid-range budget"],
-        "labels": {"drill": "Info", "evil": "x"},
-        "schedule": [{"title": "Day 1", "summary": "Arrive",
-                      "items": [{"time": "09:00", "title": "Land in Tokyo", "verify": True, "note": "n"}, "Dinner"]},
-                     {"title": "empty day", "items": []}],
-        "checklist": [{"title": "Packing", "items": ["Passport", "Adapter"]}],
-        "budget": {"currency": "JPY", "items": [{"label": "Flights", "estimate": "120,000"},
-                                                {"label": "Food"}, {"estimate": 5}]},
-        "deadlines": [{"title": "Book flights", "date": "2026-11-01"}, {"title": "Visa", "date": "2026-13-45"}],
-        "action_steps": [{"title": "Check passport validity", "details": "Expiry must be 6+ months away."}],
-    })
-    t = trip["html_app"]
-    for needle in ('id="panel-schedule"', 'id="panel-checklist"', 'id="panel-budget"', 'id="panel-deadlines"',
-                   'data-f="b0-actual"', 'data-f="d0-0-done"', 'data-f="d0-1-note"', 'data-f="k0-1-done"',
-                   'data-f="x0-done"', 'class="notice"', 'class="verify"', '<html lang="en"',
-                   'data-est="120000.0"', 'Before you go', 'data-step="Task"', "Info"):
-        assert needle in t, f"trip missing {needle}"
-    assert "<script>alert" not in t and 'en"><script' not in t
-    assert t.count("<script>") == 1
-    assert "evil" not in t
-    assert len(trip["warnings"]) >= 3, trip["warnings"]   # empty day, label-less budget row, bad date
-    _check_keys(t)
-
-    # sparse and wrong-typed new inputs must never break the build
-    odd = run({"topic": "x", "archetype": "wat", "schedule": "nope", "checklist": [1, 2],
-               "budget": {"items": "x"}, "deadlines": [None], "labels": "bad", "assumptions": 5})
-    assert odd["html_app"] and "failed" not in odd["summary"]
-    assert any("unknown archetype" in w for w in odd["warnings"])
-    print("self-test ok;", len(out["warnings"]) + len(trip["warnings"]), "warnings;", len(t), "bytes")
-
-
-try:
-    _INPUTS = inputs  # injected by SkillExecutor
-except NameError:
-    _INPUTS = None
-
-if _INPUTS is not None:
-    result = run(_INPUTS)
-elif __name__ == "__main__":
-    _selftest()
+result = run(inputs)
