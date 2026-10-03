@@ -1,6 +1,6 @@
 ---
 name: mentor-guide
-version: 3.2.0
+version: 3.1.0
 description: >
   Use when the user wants a guide, plan, roadmap or "teach me / help me plan X"
   for any topic: learning a skill or subject, exam prep, a trip or event, a
@@ -78,13 +78,13 @@ Include only sections that serve the topic:
 
 | archetype | usual sections |
 |---|---|
-| learn_skill | key_lessons, action_steps, schedule (week by week), videos, web_sources |
-| understand_subject | key_lessons, action_steps (reading, explaining), videos, web_sources |
-| exam_prep | key_lessons (syllabus areas), action_steps (study plan), schedule, videos, web_sources |
+| learn_skill | key_lessons, action_steps, videos, web_sources |
+| understand_subject | key_lessons, action_steps (reading, explaining), web_sources |
+| exam_prep | key_lessons (syllabus areas), action_steps (study plan), schedule, web_sources |
 | plan_trip / plan_event | schedule, checklist, budget, deadlines, action_steps (prep), web_sources |
-| build_project | action_steps (milestones), schedule (week by week), checklist, deadlines, key_lessons (risks), videos, web_sources |
+| build_project | action_steps (milestones), checklist, deadlines, key_lessons (risks), web_sources |
 | decision | key_lessons (one per option or criterion), action_steps (how to decide), web_sources |
-| habit | key_lessons, action_steps (experiments), schedule (week by week), videos, web_sources |
+| habit | key_lessons, action_steps (experiments), web_sources |
 
 Mixed topics may combine sections.
 
@@ -122,12 +122,6 @@ General rules:
   failed call.
 - Never call `call_synaptix_tool` with an `mcp_skill` tool type.
 
-Schedule research: when `schedule` is included, run one extra search for a real
-plan to adapt, in the user's language: `"<topic> 4 week beginner plan"`,
-`"<topic> sample syllabus"`, `"<topic> 4 week study plan"` or
-`"<topic> sample itinerary"`, whichever fits the archetype. Adapt what you
-find. Skip it if the search fails and keep the schedule smaller and accurate.
-
 Videos are **optional**. Use them for visual or physical skills, and for
 topics where demonstrations help. For topics with no good video, use
 `"videos": []` on purpose.
@@ -136,10 +130,10 @@ When using videos, run two searches:
 
 ```python
 call_synaptix_tool(tool_name="tavily_search",
-    inputs={"query": "<topic> motivational guide OR talk site:youtube.com",
+    inputs={"query": "<topic> motivational guide site:youtube.com",
             "include_images": False, "max_results": 5})
 call_synaptix_tool(tool_name="tavily_search",
-    inputs={"query": "<topic> tutorial OR advice OR guide site:youtube.com",
+    inputs={"query": "<topic> tutorial how-to site:youtube.com",
             "include_images": False, "max_results": 5})
 ```
 
@@ -175,10 +169,7 @@ pages and duplicates. Make one transcript call per URL.
 - `time` must be `m:ss` or `h:mm:ss` (e.g. "1:15", "1:02:40"). Anything else
   is silently dropped. Labels are under ~60 characters.
 - `transcript_summary` stays under ~400 characters (hard cap 1200).
-- If `eye_get_video_transcript` succeeds, extract takeaways and timestamps.
-  If the transcript call fails (no CC, rate-limit, or error), **do not drop the video**:
-  keep the video card with the title, channel, duration, and a 2-3 sentence summary
-  synthesized from the search snippet, and pass `"takeaways": []`, `"key_timestamps": []`.
+- Every takeaway comes from the transcript. If a call fails, skip that video.
 
 ## Step 5: Synthesize the Payload
 
@@ -219,35 +210,13 @@ fast-changing rules (when to see a professional, what to verify).
   vague titles ("Practice") make it fragile. No "Step 1:" prefixes; the app
   numbers them.
 
-**`schedule`** (trips, events, study plans, timelines, and week-by-week plans for
-skills, habits and projects). Groups are days, weeks or phases. Every item is a
-specific, doable action.
-
+**`schedule`** (trips, events, study plans, timelines):
 ```json
-[{"title": "Week 2", "summary": "Switch between Am, C and G cleanly",
-  "items": [
-    {"time": "Mon", "title": "Drill Am to C changes with a metronome at 60 bpm",
-     "note": "5 min. Done when you land 5 clean changes in a row."},
-    {"time": "Wed", "title": "Play the Knockin' on Heaven's Door intro slowly",
-     "note": "10 min. Focus on the G to D change.", "verify": false}]}]
+[{"title": "Day 1", "summary": "optional",
+  "items": [{"time": "09:00", "title": "...", "note": "...", "verify": true}]}]
 ```
-
-Rules:
-- Use exactly the keys `title`, `summary`, `items`, `time`, `note`, `verify`.
-- Each item title is a verb plus a concrete object from this topic.
-- Never use "Task", "Practice", "Session", "Study", "Review", "Day N" or
-  "Step N" as a title, or any title that would fit any topic.
-- Each note states a duration and a measurable "done when".
-- No two items share a title (a repeated meal such as "Lunch" is fine).
-- For learn_skill, habit and build_project, the weeks mirror `action_steps`.
-- Max ~10 groups, ~8 items each. Realistic pacing, group nearby things,
-  include rest.
-- Never use UI button labels, placeholders, or raw floats as values (e.g.
-  "Add a note", "Your note", "Placeholder", "TBD", or numbers like "0.564...").
-- If `time` or `note` has no specific content, use `""` or omit the key entirely.
-  Never invent placeholder text.
-- Derive the plan from what the schedule search in Step 3 found, adapted to the
-  user's level and time. Never invent it from nothing.
+Max ~10 groups, ~8 items each. Realistic pacing, group nearby things, include
+rest.
 
 **`checklist`**: `[{"title": "Packing", "items": ["Passport", "Adapter"]}]`
 
@@ -302,20 +271,13 @@ run_script(
 5. Every video URL is a real `https://` result; every timestamp is `m:ss` or
    `h:mm:ss`; every deadline date is a valid `YYYY-MM-DD`.
 6. No field contains HTML, markdown or invented content.
-7. No `action_steps` or `schedule` title is generic (Task, Practice,
-   Session, Study, Review, Day N, Step N) or duplicated.
-8. No field contains UI placeholders ("Add a note", "Your note") or raw float strings.
 
 ### If run_script returns an error
 
 Rebuild the **complete** payload from the checklist and resend it. Never
 resend only the part the error mentions. Fixing one field must not drop the
 others. Retry at most once. A non-empty `warnings` list is not a failure: the
-page was built and some input was skipped. Do not retry for warnings alone, with one exception: if a warning starts
-with `GENERIC:`, rewrite the flagged step and schedule titles as specific
-verb-plus-object titles and rebuild once with the complete payload (this
-is separate from the error retry). After that rebuild, return the result
-even if warnings remain.
+page was built and some input was skipped. Do not retry for warnings alone.
 
 ## Step 7: Return the Result
 
@@ -360,9 +322,8 @@ Describe only these features; do not promise others.
 2. Never fabricate transcript content, timestamps, quotes, prices or sources.
 3. Never call `call_synaptix_tool` with an `mcp_skill` tool type (recursion guard).
 4. Use exact tool names: `tavily_search`, `eye_get_video_transcript`, `eye_scrape_url`.
-5. If transcript calls fail, keep the video with empty timestamps and takeaways
-   rather than dropping it. Only omit videos (`"videos": []`) if no valid video
-   URLs could be found at all.
+5. If all video calls fail or videos aren't suitable, still build the app with
+   `"videos": []`.
 6. Always produce a complete app, even after research failures. If research is
    thin, prefer fewer accurate items over padding.
 7. Pass all text as plain text; the script handles escaping.
