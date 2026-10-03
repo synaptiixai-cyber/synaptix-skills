@@ -202,12 +202,12 @@ def steps(raw):
     out = []
     for i, it in enumerate(as_list(raw)):
         d = it if isinstance(it, dict) else {"title": it}
-        t = txt(d.get("title"), MAX_TITLE)
-        desc = txt(first(d, "description", "desc"))
+        t = txt(first(d, "title", "name", "task", "action"), MAX_TITLE)
+        desc = txt(first(d, "description", "desc", "what"))
         if not (t or desc):
             warn("action_steps[%d] had no usable text and was skipped" % i)
             continue
-        out.append((esc(t) if t else "%s %d" % (_L["step"], len(out) + 1), esc(desc),
+        out.append((esc(t) if t else esc(clip(desc, 60)), esc(desc),
                     tx(d.get("duration"), 40), tx(first(d, "details", "drill"))))
     return out
 
@@ -264,13 +264,13 @@ def schedule(raw):
     out = []
     for gi, g in enumerate(as_list(raw)):
         items = []
-        for it in (as_list(first(g, "items", "activities")) if isinstance(g, dict) else []):
+        for it in (as_list(first(g, "items", "activities", "tasks", "events", "plan")) if isinstance(g, dict) else []):
             d = it if isinstance(it, dict) else {"title": it}
-            t = txt(first(d, "title", "name"), MAX_TITLE)
+            t = txt(first(d, "title", "name", "activity", "task", "event"), MAX_TITLE)
             if t:
-                items.append((esc(t), tx(first(d, "note", "details"), 800), tx(d.get("time"), 40), bool(d.get("verify"))))
+                items.append((esc(t), tx(first(d, "note", "details", "description"), 800), tx(first(d, "time", "when"), 40), bool(d.get("verify"))))
         if items:
-            out.append((tx(first(g, "title", "day", "phase"), MAX_TITLE) or "Day %d" % (len(out) + 1),
+            out.append((tx(first(g, "title", "day", "phase", "week"), MAX_TITLE) or "Day %d" % (len(out) + 1),
                         tx(g.get("summary"), 300), items))
         else:
             warn("schedule[%d] had no items and was skipped" % gi)
@@ -298,6 +298,23 @@ def budget(raw):
             else:
                 warn("budget.items[%d] had no label and was skipped" % i)
     return (tx(raw.get("currency"), 8), items) if items else None
+
+
+_GENERIC = re.compile(r"^(?:task|step|day|activity|item|practice|session|study|review|milestone|to do)\s*\d*$", re.I)
+
+
+def lint(sch, st):
+    """Warn (never fail) when step or schedule titles are generic or copied."""
+    titles = [s[0] for s in st] + [i[0] for g in sch for i in g[2]]
+    seen, bad = set(), 0
+    for t in titles:
+        k = " ".join(t.lower().split())
+        if _GENERIC.match(k) or (len(k.split()) >= 3 and k in seen):
+            bad += 1
+        seen.add(k)
+    if bad >= 2 or (bad and bad * 4 >= len(titles)):
+        warn("GENERIC: %d of %d step/schedule titles are generic or duplicated. "
+             "Rewrite each as a specific verb plus object and rebuild once." % (bad, len(titles)))
 
 
 def deadlines(raw):
@@ -1155,6 +1172,7 @@ def build(inp):
     ck = checklist(inp.get("checklist"))
     bg = budget(inp.get("budget"))
     dl = deadlines(inp.get("deadlines"))
+    lint(sch, st)
     goal_raw = txt(inp.get("goal"), 500)
     if not (les or qs or st or vs or ws or sch or ck or bg or dl):
         warn("no lessons, steps, schedule or resources were provided; the guide starts empty")
