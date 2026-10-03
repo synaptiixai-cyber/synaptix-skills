@@ -51,6 +51,7 @@ _TS = re.compile(r"^(?:\d{1,2}:)?\d{1,2}:\d{2}$")
 _TS_LINE = re.compile(r"^\s*\[?((?:\d{1,2}:)?\d{1,2}:\d{2})\]?\s*[-\u2013\u2014:]?\s*(.*)$")
 _LANG = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 _DATE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$")
+_PLACEHOLDER = re.compile(r"^(?:add a note|your note.*|note|placeholder|tbd|n/a|\d+(?:\.\d+)?)$", re.IGNORECASE)
 
 _L = {}   # active labels (already escaped), refreshed once per build
 W = []    # warnings
@@ -203,7 +204,11 @@ def steps(raw):
     for i, it in enumerate(as_list(raw)):
         d = it if isinstance(it, dict) else {"title": it}
         t = txt(first(d, "title", "name", "task", "action"), MAX_TITLE)
+        if _PLACEHOLDER.match(t.strip()):
+            t = ""
         desc = txt(first(d, "description", "desc", "what"))
+        if _PLACEHOLDER.match(desc.strip()):
+            desc = ""
         if not (t or desc):
             warn("action_steps[%d] had no usable text and was skipped" % i)
             continue
@@ -267,11 +272,20 @@ def schedule(raw):
         for it in (as_list(first(g, "items", "activities", "tasks", "events", "plan")) if isinstance(g, dict) else []):
             d = it if isinstance(it, dict) else {"title": it}
             t = txt(first(d, "title", "name", "activity", "task", "event"), MAX_TITLE)
-            if t:
-                items.append((esc(t), tx(first(d, "note", "details", "description"), 800), tx(first(d, "time", "when"), 40), bool(d.get("verify"))))
+            if not t or _PLACEHOLDER.match(t.strip()):
+                continue
+            nt = txt(first(d, "note", "details", "description"), 800)
+            if _PLACEHOLDER.match(nt.strip()):
+                nt = ""
+            tm = txt(first(d, "time", "when"), 40)
+            if _PLACEHOLDER.match(tm.strip()):
+                tm = ""
+            items.append((esc(t), tx(nt, 800), tx(tm, 40), bool(d.get("verify"))))
         if items:
-            out.append((tx(first(g, "title", "day", "phase", "week"), MAX_TITLE) or "Day %d" % (len(out) + 1),
-                        tx(g.get("summary"), 300), items))
+            g_title = tx(first(g, "title", "day", "phase", "week"), MAX_TITLE)
+            if not g_title or _PLACEHOLDER.match(g_title.strip()):
+                g_title = "Day %d" % (len(out) + 1)
+            out.append((g_title, tx(g.get("summary"), 300), items))
         else:
             warn("schedule[%d] had no items and was skipped" % gi)
     return out
@@ -300,7 +314,7 @@ def budget(raw):
     return (tx(raw.get("currency"), 8), items) if items else None
 
 
-_GENERIC = re.compile(r"^(?:task|step|day|activity|item|practice|session|study|review|milestone|to do)\s*\d*$", re.I)
+_GENERIC = re.compile(r"^(?:task|step|day|activity|item|practice|session|study|review|milestone|to do|add a note|note)\s*\d*$|^\d+(?:\.\d+)?$", re.I)
 
 
 def lint(sch, st):
