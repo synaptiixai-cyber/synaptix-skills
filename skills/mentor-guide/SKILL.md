@@ -1,6 +1,6 @@
 ---
 name: mentor-guide
-version: 3.1.0
+version: 3.2.0
 description: >
   Use when the user wants a guide, plan, roadmap or "teach me / help me plan X"
   for any topic: learning a skill or subject, exam prep, a trip or event, a
@@ -78,13 +78,13 @@ Include only sections that serve the topic:
 
 | archetype | usual sections |
 |---|---|
-| learn_skill | key_lessons, action_steps, videos, web_sources |
+| learn_skill | key_lessons, action_steps, schedule (week by week), videos, web_sources |
 | understand_subject | key_lessons, action_steps (reading, explaining), web_sources |
 | exam_prep | key_lessons (syllabus areas), action_steps (study plan), schedule, web_sources |
 | plan_trip / plan_event | schedule, checklist, budget, deadlines, action_steps (prep), web_sources |
-| build_project | action_steps (milestones), checklist, deadlines, key_lessons (risks), web_sources |
+| build_project | action_steps (milestones), schedule (week by week), checklist, deadlines, key_lessons (risks), web_sources |
 | decision | key_lessons (one per option or criterion), action_steps (how to decide), web_sources |
-| habit | key_lessons, action_steps (experiments), web_sources |
+| habit | key_lessons, action_steps (experiments), schedule (week by week), web_sources |
 
 Mixed topics may combine sections.
 
@@ -121,6 +121,12 @@ General rules:
 - Never fabricate transcripts, timestamps, quotes, prices or sources. Skip any
   failed call.
 - Never call `call_synaptix_tool` with an `mcp_skill` tool type.
+
+Schedule research: when `schedule` is included, run one extra search for a real
+plan to adapt, in the user's language: `"<topic> 4 week beginner plan"`,
+`"<topic> sample syllabus"`, `"<topic> 4 week study plan"` or
+`"<topic> sample itinerary"`, whichever fits the archetype. Adapt what you
+find. Skip it if the search fails and keep the schedule smaller and accurate.
 
 Videos are **optional**. Use them for visual or physical skills, and for
 topics where demonstrations help. For topics with no good video, use
@@ -210,13 +216,31 @@ fast-changing rules (when to see a professional, what to verify).
   vague titles ("Practice") make it fragile. No "Step 1:" prefixes; the app
   numbers them.
 
-**`schedule`** (trips, events, study plans, timelines):
+**`schedule`** (trips, events, study plans, timelines, and week-by-week plans for
+skills, habits and projects). Groups are days, weeks or phases. Every item is a
+specific, doable action.
+
 ```json
-[{"title": "Day 1", "summary": "optional",
-  "items": [{"time": "09:00", "title": "...", "note": "...", "verify": true}]}]
+[{"title": "Week 2", "summary": "Switch between Am, C and G cleanly",
+  "items": [
+    {"time": "Mon", "title": "Drill Am to C changes with a metronome at 60 bpm",
+     "note": "5 min. Done when you land 5 clean changes in a row."},
+    {"time": "Wed", "title": "Play the Knockin' on Heaven's Door intro slowly",
+     "note": "10 min. Focus on the G to D change.", "verify": false}]}]
 ```
-Max ~10 groups, ~8 items each. Realistic pacing, group nearby things, include
-rest.
+
+Rules:
+- Use exactly the keys `title`, `summary`, `items`, `time`, `note`, `verify`.
+- Each item title is a verb plus a concrete object from this topic.
+- Never use "Task", "Practice", "Session", "Study", "Review", "Day N" or
+  "Step N" as a title, or any title that would fit any topic.
+- Each note states a duration and a measurable "done when".
+- No two items share a title (a repeated meal such as "Lunch" is fine).
+- For learn_skill, habit and build_project, the weeks mirror `action_steps`.
+- Max ~10 groups, ~8 items each. Realistic pacing, group nearby things,
+  include rest.
+- Derive the plan from what the schedule search in Step 3 found, adapted to the
+  user's level and time. Never invent it from nothing.
 
 **`checklist`**: `[{"title": "Packing", "items": ["Passport", "Adapter"]}]`
 
@@ -271,13 +295,19 @@ run_script(
 5. Every video URL is a real `https://` result; every timestamp is `m:ss` or
    `h:mm:ss`; every deadline date is a valid `YYYY-MM-DD`.
 6. No field contains HTML, markdown or invented content.
+7. No `action_steps` or `schedule` title is generic (Task, Practice,
+   Session, Study, Review, Day N, Step N) or duplicated.
 
 ### If run_script returns an error
 
 Rebuild the **complete** payload from the checklist and resend it. Never
 resend only the part the error mentions. Fixing one field must not drop the
 others. Retry at most once. A non-empty `warnings` list is not a failure: the
-page was built and some input was skipped. Do not retry for warnings alone.
+page was built and some input was skipped. Do not retry for warnings alone, with one exception: if a warning starts
+with `GENERIC:`, rewrite the flagged step and schedule titles as specific
+verb-plus-object titles and rebuild once with the complete payload (this
+is separate from the error retry). After that rebuild, return the result
+even if warnings remain.
 
 ## Step 7: Return the Result
 
