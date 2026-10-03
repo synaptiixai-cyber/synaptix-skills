@@ -79,12 +79,12 @@ Include only sections that serve the topic:
 | archetype | usual sections |
 |---|---|
 | learn_skill | key_lessons, action_steps, videos, web_sources |
-| understand_subject | key_lessons, action_steps (reading, explaining), web_sources |
-| exam_prep | key_lessons (syllabus areas), action_steps (study plan), schedule, web_sources |
+| understand_subject | key_lessons, action_steps (reading, explaining), videos, web_sources |
+| exam_prep | key_lessons (syllabus areas), action_steps (study plan), schedule, videos, web_sources |
 | plan_trip / plan_event | schedule, checklist, budget, deadlines, action_steps (prep), web_sources |
-| build_project | action_steps (milestones), checklist, deadlines, key_lessons (risks), web_sources |
+| build_project | action_steps (milestones), checklist, deadlines, key_lessons (risks), videos, web_sources |
 | decision | key_lessons (one per option or criterion), action_steps (how to decide), web_sources |
-| habit | key_lessons, action_steps (experiments), web_sources |
+| habit | key_lessons, action_steps (experiments), videos, web_sources |
 
 Mixed topics may combine sections.
 
@@ -122,18 +122,17 @@ General rules:
   failed call.
 - Never call `call_synaptix_tool` with an `mcp_skill` tool type.
 
-Videos are **optional**. Use them for visual or physical skills, and for
-topics where demonstrations help. For topics with no good video, use
-`"videos": []` on purpose.
+Videos are **optional**. Use them whenever high-quality videos exist for the
+topic. For topics with no good video, use `"videos": []`.
 
 When using videos, run two searches:
 
 ```python
 call_synaptix_tool(tool_name="tavily_search",
-    inputs={"query": "<topic> motivational guide site:youtube.com",
+    inputs={"query": "<topic> motivational guide OR talk site:youtube.com",
             "include_images": False, "max_results": 5})
 call_synaptix_tool(tool_name="tavily_search",
-    inputs={"query": "<topic> tutorial how-to site:youtube.com",
+    inputs={"query": "<topic> tutorial OR advice OR guide site:youtube.com",
             "include_images": False, "max_results": 5})
 ```
 
@@ -169,7 +168,10 @@ pages and duplicates. Make one transcript call per URL.
 - `time` must be `m:ss` or `h:mm:ss` (e.g. "1:15", "1:02:40"). Anything else
   is silently dropped. Labels are under ~60 characters.
 - `transcript_summary` stays under ~400 characters (hard cap 1200).
-- Every takeaway comes from the transcript. If a call fails, skip that video.
+- If `eye_get_video_transcript` succeeds, extract takeaways and timestamps.
+  If the transcript call fails (no CC, rate-limit, or tool error), do NOT drop
+  the video: keep the video card with title, channel, duration, and a 2-3 sentence
+  summary from the search snippet, and pass `"takeaways": []`, `"key_timestamps": []`.
 
 ## Step 5: Synthesize the Payload
 
@@ -322,8 +324,9 @@ Describe only these features; do not promise others.
 2. Never fabricate transcript content, timestamps, quotes, prices or sources.
 3. Never call `call_synaptix_tool` with an `mcp_skill` tool type (recursion guard).
 4. Use exact tool names: `tavily_search`, `eye_get_video_transcript`, `eye_scrape_url`.
-5. If all video calls fail or videos aren't suitable, still build the app with
-   `"videos": []`.
+5. If transcript calls fail, keep the video with empty timestamps and takeaways
+   rather than dropping it. Only omit videos (`"videos": []`) if no valid video
+   URLs could be found at all.
 6. Always produce a complete app, even after research failures. If research is
    thin, prefer fewer accurate items over padding.
 7. Pass all text as plain text; the script handles escaping.
