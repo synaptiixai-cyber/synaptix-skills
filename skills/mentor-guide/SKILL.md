@@ -266,9 +266,13 @@ run_script(
         "topic": "...", "goal": "...", "depth": "...",
         "archetype": "...", "lang": "en", "labels": {}, "notice": "",
         "assumptions": [],
-        "videos": [], "web_sources": [], "key_lessons": [],
-        "action_steps": [], "expert_quotes": [],
-        "schedule": [], "checklist": [], "budget": {}, "deadlines": []
+        "key_lessons": [...],
+        "action_steps": [...],
+        "videos": [...],           # Optional - omit if no video researched
+        "web_sources": [...],      # Optional - omit if no sources researched
+        "expert_quotes": [...]     # Optional - omit if none
+        # Optional: include "schedule", "checklist", "budget", "deadlines"
+        # ONLY if the topic naturally requires them (e.g. travel or event planning).
     }
 )
 ```
@@ -280,8 +284,9 @@ run_script(
    the top level.
 3. `topic` is the real subject, not a placeholder, passed raw (the script
    escapes it).
-4. Every list key is present and is a list (use `[]` when empty), never
-   omitted and never a string. Unused `budget` is `{}`.
+4. Only include sections relevant to the topic. Unused sections (`budget`,
+   `schedule`, `deadlines`, `checklist`) should be completely omitted.
+   The script automatically handles missing optional keys.
 5. Every video URL is a real `https://` result; every timestamp is `m:ss` or
    `h:mm:ss`; every deadline date is a valid `YYYY-MM-DD`.
 6. No field contains HTML, markdown or invented content.
