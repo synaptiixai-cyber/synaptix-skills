@@ -125,21 +125,35 @@ General rules:
 Videos are **optional**. Use them whenever high-quality videos exist for the
 topic. For topics with no good video, use `"videos": []`.
 
-When using videos, run two searches:
+When using videos, run two searches using advanced search depth and domain filtering:
 
 ```python
 call_synaptix_tool(tool_name="tavily_search",
-    inputs={"query": "<topic> motivational guide OR talk site:youtube.com",
-            "include_images": False, "max_results": 5})
+    inputs={"query": "<topic> motivational guide OR talk",
+            "search_depth": "advanced",
+            "include_domains": ["youtube.com"],
+            "max_results": 5})
 call_synaptix_tool(tool_name="tavily_search",
-    inputs={"query": "<topic> tutorial OR advice OR guide site:youtube.com",
-            "include_images": False, "max_results": 5})
+    inputs={"query": "<topic> tutorial OR advice OR guide",
+            "search_depth": "advanced",
+            "include_domains": ["youtube.com"],
+            "max_results": 5})
 ```
 
-Pick up to 3 distinct YouTube video URLs (watch, youtu.be, shorts or embed;
-the app only shows a player for valid video IDs). Prefer high-authority
-channels and a mix of motivational and instructional. Skip playlists, channel
-pages and duplicates. Make one transcript call per URL.
+Select up to 3 distinct YouTube video URLs following these strict rules:
+- **STRICTLY INDIVIDUAL VIDEOS ONLY**: Pick URLs with a valid video watch ID
+  (`https://www.youtube.com/watch?v=...` or `https://youtu.be/...`).
+- **STRICTLY EXCLUDE PLAYLISTS AND CHANNELS**: Never select URLs containing
+  `/playlist?list=` or `/@` (channel homepages). The app player only works
+  on individual video IDs.
+- **USE TAVILY'S CONTENT DEPTH**: Because `search_depth: "advanced"` is enabled,
+  Tavily's `content` snippet already contains video descriptions, channel details,
+  and transcript excerpts with timestamps (e.g. `[1:15]`, `[8:55]`). Use this
+  rich text to synthesize `transcript_summary`, `takeaways`, and `key_timestamps`
+  directly.
+- Make one `eye_get_video_transcript` call per URL if deeper captions are needed.
+  If the transcript call fails (no CC, rate-limit, or tool error), do NOT drop
+  the video: use the rich text from Tavily's snippet.
 
 ## Step 4: Video Objects (only if used)
 
@@ -162,16 +176,14 @@ pages and duplicates. Make one transcript call per URL.
 }
 ```
 
-- 3-5 timestamps per video, taken only from the transcript or chapter
-  markers. Look for emphasis phrases ("most important", "key point", "secret
-  is", "here's what").
+- 3-5 timestamps per video, taken from the transcript or chapter markers in the
+  search snippet. Look for emphasis phrases ("most important", "key point",
+  "secret is", "here's what").
 - `time` must be `m:ss` or `h:mm:ss` (e.g. "1:15", "1:02:40"). Anything else
   is silently dropped. Labels are under ~60 characters.
 - `transcript_summary` stays under ~400 characters (hard cap 1200).
-- If `eye_get_video_transcript` succeeds, extract takeaways and timestamps.
-  If the transcript call fails (no CC, rate-limit, or tool error), do NOT drop
-  the video: keep the video card with title, channel, duration, and a 2-3 sentence
-  summary from the search snippet, and pass `"takeaways": []`, `"key_timestamps": []`.
+- If neither the transcript nor the snippet contains timestamps, pass
+  `"key_timestamps": []` and keep the video card with its summary.
 
 ## Step 5: Synthesize the Payload
 
