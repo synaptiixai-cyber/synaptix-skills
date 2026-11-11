@@ -6,11 +6,11 @@ description: >
   card (title, bar-chart, line-chart, donut-chart, comparison, process, cycle, timeline, hub,
   recap) rendered live in the Canvas. Use for editorial explainers, concept breakdowns, step-by-step
   visual summaries, A-vs-B option cards, and small spotlight metrics (<= 12 data points).
-  NOT for photorealistic images, paintings, or AI artwork (use generate_illustration).
-  NOT for system architecture, sequence, ERD, state, or >= 7-node graph diagrams (use generate_diagram).
-  NOT for SQL result sets or multi-series tabular dataset plots (use generate_chart).
-  NOT for multi-section interactive plans, budgets, checklists, or stateful apps (use create_app).
-  NOT for multi-screen landing pages or marketing websites (use motionsites_web_builder).
+  NOT for photorealistic images, paintings, or artwork.
+  NOT for complex system architecture, sequence, ERD, state, or >= 7-node graph diagrams.
+  NOT for large SQL result sets or multi-table dataset plots.
+  NOT for multi-section interactive trackers, forms, or stateful apps.
+  NOT for multi-screen landing pages or marketing websites.
 risk: none
 env_required: []
 tags: [explainer, infographic, animation, svg, visual-summary, charts]
@@ -20,34 +20,35 @@ author: Synaptix
 # Synaptix Explainer
 
 You choose **one** template and fill a declarative JSON `spec`. A deterministic Python compiler
-validates the spec, solves typography & collision-free layout, and compiles a self-contained
-animated SVG explainer card for the Canvas. **Never write HTML, CSS, or SVG yourself.**
+(`scripts/illustrate.py`) validates the spec, solves typography & collision-free layout, and
+compiles a self-contained animated SVG explainer card. **Never write HTML, CSS, or SVG yourself.**
 
 ## Workflow
 
-1. **Pick the best template** from the chooser table below. If the brief needs artwork, a complex
-   architecture graph, or a multi-tab interactive app, decline cleanly and recommend the matching
-   tool (`generate_illustration`, `generate_diagram`, `generate_chart`, or `create_app`).
-2. **Load ONLY the chosen template contract** before building `spec`:
-   `load_subskill(subskill_name="references/<template>.md")`
+1. **Select a template** from the `## Template Chooser` table below:
+   - Distill large or complex briefs into the clearest 3–8 high-level points, stages, or pillars
+     that fit the chosen template.
+   - Only decline (in plain English, without inventing HTML/SVG) if the user is asking for a
+     literal photograph, painting, or illustration artwork rather than an explainer visual.
+2. **Read ONLY the chosen template reference file** before building `spec`:
+   Read `references/<template>.md` (for example, `references/bar-chart.md`).
 3. **Verify data provenance (`data_kind`)**:
    - Real numbers supplied by the user or retrieved from a source -> set `"data_kind": "sourced"`
      and cite the origin in `"source"` (`<= 90` chars).
-   - User asked for real-world facts/statistics not in the prompt -> call
-     `call_synaptix_tool(tool_name="tavily_search", inputs={"query": "..."})` first, then set
-     `"data_kind": "sourced"` with `"source"`.
-   - Conceptual / hypothetical example without real figures -> set `"data_kind": "illustrative"`
+   - User asked for real-world facts or current statistics not in the prompt -> use `WebSearch` to
+     look up the figures first, then set `"data_kind": "sourced"` and cite `"source"`.
+   - Conceptual or hypothetical example without real figures -> set `"data_kind": "illustrative"`
      (renders an `"ILLUSTRATIVE DATA"` badge automatically; never fabricate citations).
    - Numeric fields accept plain numbers (`98`, `12.5`) or safe arithmetic strings (`"120+15"`,
      `"round(450/12, 1)"`).
-4. **Compile the explainer**:
-   `run_script(script_path="illustrate.py", inputs={"spec": <spec>})`
+4. **Compile the explainer** by running `scripts/illustrate.py` with `inputs={"spec": <spec>}`.
 5. **Single-retry rule on validation/layout errors**:
-   - If the script returns `errors`, fix **every** reported `path` in one pass using its `fix`
-     hint (rewrite long text cleanly; never chop words mid-sentence or append `"..."`), then call
-     `run_script` **once** more.
-   - If the retry still returns `errors`, stop and explain concisely what could not fit.
-6. **Return**: When `run_script` succeeds (`html_app` generated), your work is complete.
+   - If `scripts/illustrate.py` returns `errors`, fix **every** reported `path` in one pass using
+     its `fix` hint (rewrite long text cleanly; never chop words mid-sentence or append `"..."`),
+     and run `scripts/illustrate.py` **once** more.
+   - If the retry still returns `errors`, stop and explain concisely in plain language what could
+     not fit.
+6. **Finish**: Once `scripts/illustrate.py` returns `html_app`, your work is complete.
 
 ## Template Chooser
 

@@ -279,17 +279,21 @@ class TestSynaptixExplainer(unittest.TestCase):
         self.assertIn("SKILL.md", files)
         self.assertIn("scripts/illustrate.py", files)
 
-        # SKILL.md < 6 KB + required frontmatter & negative routing rules
+        # SKILL.md < 6 KB + portable Claude-skill conventions (no hardcoded internal tool IDs)
         skill_md = files["SKILL.md"]
         self.assertLess(len(skill_md.encode("utf-8")), 6144, "SKILL.md must stay under 6 KB")
-        for neg_tool in (
+        self.assertIn("WebSearch", skill_md)
+        self.assertIn("scripts/illustrate.py", skill_md)
+        for internal_id in (
+            "tavily_search",
+            "call_synaptix_tool",
             "generate_illustration",
             "generate_diagram",
             "generate_chart",
             "create_app",
             "motionsites_web_builder",
         ):
-            self.assertIn(neg_tool, skill_md)
+            self.assertNotIn(internal_id, skill_md, f"SKILL.md should stay portable without {internal_id}")
 
         # Real Synaptix CompatibilityValidator check
         compat_mod = harness.load_compatibility_validator_mod()
